@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  document-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MARKER_API_KEY=${MARKER_API_KEY:-ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI}
+      - MARKER_API_URL=${MARKER_API_URL:-https://www.datalab.to/api/v1/marker}
+      - USE_LOCAL_MARKER=${USE_LOCAL_MARKER:-true}
+      - WEAVIATE_API_KEY=${WEAVIATE_API_KEY}
+      - WEAVIATE_URL=${WEAVIATE_URL}
+    restart: unless-stopped

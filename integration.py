@@ -24,12 +24,37 @@ import weaviate
 from dotenv import load_dotenv
 from PIL import Image
 from unstructured.partition.md import partition_md
-from unstructured.chunking.title import chunk_by_title
-from unstructured.chunking.basic import chunk_elements
+try:
+    # Try newer unstructured version imports
+    from unstructured.chunking.title import chunk_by_title
+    from unstructured.chunking.basic import chunk_elements
+except ImportError:
+    # Fallback for older versions or different import paths
+    try:
+        from unstructured.chunking.title import chunk_by_title
+        from unstructured.chunking.basic import chunk_elements
+    except ImportError:
+        # If still failing, we'll handle this in the function
+        chunk_by_title = None
+        chunk_elements = None
 from weaviate.util import generate_uuid5
-from weaviate import WeaviateClient
-from weaviate.auth import AuthApiKey
-from weaviate.connect import ConnectionParams, ProtocolParams
+try:
+    # Try newer weaviate-client import
+    from weaviate import WeaviateClient
+    from weaviate.auth import AuthApiKey
+    from weaviate.connect import ConnectionParams, ProtocolParams
+except ImportError:
+    # Fallback for older versions
+    try:
+        from weaviate import Client as WeaviateClient
+        from weaviate.auth import AuthApiKey
+        from weaviate.connect import ConnectionParams, ProtocolParams
+    except ImportError:
+        # If still failing, we'll handle this in the function
+        WeaviateClient = None
+        AuthApiKey = None
+        ConnectionParams = None
+        ProtocolParams = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,7 +90,7 @@ class Config:
     
     # Local Marker settings
     USE_LOCAL_MARKER = os.getenv("USE_LOCAL_MARKER", "true").lower() == "true"
-    LOCAL_MARKER_COMMAND = "marker_single"
+    LOCAL_MARKER_COMMAND = "marker_single"  # Will try full path if not found
     LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
     
     # Weaviate settings
@@ -215,9 +240,26 @@ class DocumentProcessor:
             output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
             os.makedirs(output_dir, exist_ok=True)
             
+            # Find marker_single command
+            marker_cmd = "marker_single"
+            possible_paths = [
+                "marker_single",
+                "/usr/local/bin/marker_single",
+                "/usr/bin/marker_single"
+            ]
+            
+            for path in possible_paths:
+                try:
+                    result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        marker_cmd = path
+                        break
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    continue
+            
             # Build the command
             cmd = [
-                "marker_single",
+                marker_cmd,
                 file_path,
                 "--use_llm",
                 "--disable_image_extraction", 
@@ -278,7 +320,7 @@ def convert_to_markdown(
     file_path: str,
     save_to_file: Optional[bool] = False,
     output_path: Optional[str] = None,
-    use_local: Optional[bool] = True
+    use_local: Optional[bool] = None
 ) -> Optional[str]:
     """
     Convert a PDF or image file to markdown format.
@@ -311,11 +353,21 @@ def convert_to_markdown(
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
     
+    # Use config default if use_local is not specified
+    if use_local is None:
+        use_local = Config.USE_LOCAL_MARKER
+    
     # Choose between local and API processing
     if use_local:
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
-    else:
+        
+        # If local processing fails, fallback to API
+        if markdown_content is None:
+            logger.warning("Local Marker processing failed, falling back to API")
+            use_local = False
+    
+    if not use_local:
         logger.info("Using Marker API for processing")
         # Upload and get initial response
         result = processor._upload_to_marker(file_path)
@@ -405,6 +457,8 @@ def chunk_markdown(
     
     # Chunk the elements
     try:
+        if chunk_by_title is None:
+            raise ImportError("chunk_by_title not available")
         chunks = chunk_by_title(
             elements,
             max_characters=max_chunk_size,
@@ -414,12 +468,17 @@ def chunk_markdown(
         logger.info(f"Used title-based chunking")
     except Exception as e:
         logger.warning(f"Title-based chunking failed, falling back to basic: {e}")
-        chunks = chunk_elements(
-            elements,
-            max_characters=max_chunk_size,
-            new_after_n_chars=new_chunk_after,
-            overlap=chunk_overlap
-        )
+        if chunk_elements is None:
+            # If both chunking methods are unavailable, create simple text chunks
+            logger.warning("No chunking functions available, creating simple text chunks")
+            chunks = _create_simple_chunks(markdown_content, max_chunk_size)
+        else:
+            chunks = chunk_elements(
+                elements,
+                max_characters=max_chunk_size,
+                new_after_n_chars=new_chunk_after,
+                overlap=chunk_overlap
+            )
     
     # Prepare final chunks with metadata
     tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -473,6 +532,52 @@ def chunk_markdown(
     return final_chunks
 
 
+def _create_simple_chunks(text: str, max_chunk_size: int) -> List:
+    """
+    Create simple text chunks when unstructured chunking is not available.
+    
+    Args:
+        text: Input text to chunk
+        max_chunk_size: Maximum size per chunk
+        
+    Returns:
+        List of simple chunk objects with text content
+    """
+    class SimpleChunk:
+        def __init__(self, content: str):
+            self.content = content
+            self.category = "text"
+        
+        def __str__(self):
+            return self.content
+    
+    # Simple chunking by splitting on paragraphs and combining to max size
+    paragraphs = text.split('\n\n')
+    chunks = []
+    current_chunk = ""
+    
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+            
+        # If adding this paragraph would exceed max size, start new chunk
+        if len(current_chunk) + len(paragraph) + 2 > max_chunk_size and current_chunk:
+            chunks.append(SimpleChunk(current_chunk.strip()))
+            current_chunk = paragraph
+        else:
+            if current_chunk:
+                current_chunk += "\n\n" + paragraph
+            else:
+                current_chunk = paragraph
+    
+    # Add the last chunk if there's content
+    if current_chunk.strip():
+        chunks.append(SimpleChunk(current_chunk.strip()))
+    
+    return chunks
+
+
 def _save_chunks_to_file(chunks: List[Dict], output_path: Union[str, Path]) -> None:
     """
     Save chunks to a JSON file.
@@ -488,7 +593,7 @@ def _save_chunks_to_file(chunks: List[Dict], output_path: Union[str, Path]) -> N
 
 
 def save_document_to_weaviate(
-    client: weaviate.WeaviateClient,
+    client,
     file_path: str,
     chunks: List[Dict],
     document_id: str,
@@ -536,7 +641,7 @@ def save_document_to_weaviate(
 
 
 def save_chunks_to_weaviate(
-    client: weaviate.WeaviateClient,
+    client,
     chunks: List[Dict],
     document_id: str,
     tenant_id: str
@@ -578,7 +683,7 @@ def save_chunks_to_weaviate(
 def delete_document_from_weaviate(
     document_id: str,
     tenant_id: str,
-    client: Optional[weaviate.WeaviateClient] = None
+    client: Optional[object] = None
 ) -> Dict[str, Union[str, int]]:
     """
     Delete a document and all its associated chunks from Weaviate.
@@ -680,7 +785,7 @@ def _get_weaviate_client(
     url: Optional[str] = None,
     http_port: Optional[int] = None,
     grpc_port: Optional[int] = None
-) -> WeaviateClient:
+):
     """
     Create and connect to a Weaviate client instance.
     
@@ -696,33 +801,48 @@ def _get_weaviate_client(
     Raises:
         Exception: If connection fails
     """
+    if WeaviateClient is None:
+        logger.warning("WeaviateClient is not available. Please install weaviate-client package.")
+        return None
+    
     api_key = api_key or Config.WEAVIATE_API_KEY
     url = url or Config.WEAVIATE_URL
     http_port = http_port or Config.WEAVIATE_HTTP_PORT
     grpc_port = grpc_port or Config.WEAVIATE_GRPC_PORT
     
-    client = WeaviateClient(
-        connection_params=ConnectionParams(
-            http=ProtocolParams(host=url, port=http_port, secure=False),
-            grpc=ProtocolParams(host=url, port=grpc_port, secure=False)
-        ),
-        auth_client_secret=AuthApiKey(api_key),
-    )
-    
     try:
+        # Try newer weaviate-client API
+        client = WeaviateClient(
+            connection_params=ConnectionParams(
+                http=ProtocolParams(host=url, port=http_port, secure=False),
+                grpc=ProtocolParams(host=url, port=grpc_port, secure=False)
+            ),
+            auth_client_secret=AuthApiKey(api_key),
+        )
+        
         client.connect()
         logger.info(f"Connected to Weaviate at {url}")
         return client
     except Exception as e:
-        logger.error(f"Failed to connect to Weaviate: {e}")
-        raise
+        # Fallback to older weaviate-client API
+        try:
+            import weaviate
+            client = weaviate.Client(
+                url=f"http://{url}:{http_port}",
+                auth_client_secret=weaviate.AuthApiKey(api_key)
+            )
+            logger.info(f"Connected to Weaviate at {url} (legacy client)")
+            return client
+        except Exception as e2:
+            logger.error(f"Failed to connect to Weaviate: {e2}")
+            raise
 
 # Make it API
 def process_document_to_weaviate(
     file_path: str,
     document_id: str,
     tenant_id: str,
-    client: Optional[weaviate.WeaviateClient] = None,
+    client: Optional[object] = None,
     save_markdown: bool = False,
     save_chunks_json: bool = False,
     output_dir: Optional[str] = None
