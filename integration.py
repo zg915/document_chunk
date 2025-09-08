@@ -63,7 +63,6 @@ class Config:
     RETRY_DELAY = 10
     
     # Local Marker settings
-    USE_LOCAL_MARKER = os.getenv("USE_LOCAL_MARKER", "true").lower() == "true"
     LOCAL_MARKER_COMMAND = "marker_single"  # Will try full path if not found
     LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
     
@@ -344,9 +343,9 @@ def convert_to_markdown(
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
     
-    # Use config default if use_local is not specified
+    # Default to local processing if use_local is not specified
     if use_local is None:
-        use_local = Config.USE_LOCAL_MARKER
+        use_local = True
     
     # Choose between local and API processing
     if use_local:
