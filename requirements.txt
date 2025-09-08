@@ -14,12 +14,12 @@ unstructured[pdf]==0.10.30
 unstructured[image]==0.10.30
 
 # Weaviate vector database
-weaviate-client==3.24.0
+weaviate-client==4.16.9
 
 # Marker for document processing (API only - local requires separate installation)
 # Note: For local marker, install marker-pdf separately: pip install marker-pdf
 
 # Additional utilities
-pydantic==2.5.0
+pydantic>=2.8.0
 pathlib2==2.3.7
 markdown==3.5.1
