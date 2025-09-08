@@ -273,7 +273,7 @@ class DocumentProcessor:
             logger.error(f"Error processing with local Marker: {e}")
             return None
 
-
+# make it API
 def convert_to_markdown(
     file_path: str,
     save_to_file: Optional[bool] = False,
@@ -574,7 +574,7 @@ def save_chunks_to_weaviate(
     
     logger.info(f"Saved {len(chunks)} chunks to Weaviate for document {document_id}")
 
-
+# Make it API
 def delete_document_from_weaviate(
     document_id: str,
     tenant_id: str,
@@ -717,7 +717,7 @@ def _get_weaviate_client(
         logger.error(f"Failed to connect to Weaviate: {e}")
         raise
 
-
+# Make it API
 def process_document_to_weaviate(
     file_path: str,
     document_id: str,
