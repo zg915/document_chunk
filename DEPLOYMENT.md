@@ -76,7 +76,7 @@ gcloud run deploy document-processing-api \
     --region us-central1 \
     --allow-unauthenticated \
     --service-account document-processing-api@YOUR_PROJECT_ID.iam.gserviceaccount.com \
-    --set-env-vars "PORT=8000,USE_LOCAL_MARKER=false,LOG_LEVEL=INFO" \
+    --set-env-vars "PORT=8001,USE_LOCAL_MARKER=false,LOG_LEVEL=INFO" \
     --set-secrets "WEAVIATE_URL=weaviate-url:latest,WEAVIATE_API_KEY=weaviate-api-key:latest,MARKER_API_KEY=marker-api-key:latest" \
     --cpu 2 \
     --memory 4Gi \
@@ -92,7 +92,7 @@ gcloud run deploy document-processing-api \
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `PORT` | Server port | No | 8000 |
+| `PORT` | Server port | No | 8001 |
 | `USE_LOCAL_MARKER` | Use local Marker | No | false |
 | `LOG_LEVEL` | Logging level | No | INFO |
 | `ALLOWED_ORIGINS` | CORS origins | No | * |

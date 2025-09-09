@@ -24,11 +24,11 @@ spec:
       containers:
       - image: gcr.io/YOUR_PROJECT_ID/document-processing-api:latest
         ports:
-        - containerPort: 8000
+        - containerPort: 8001
         env:
         # Environment variables
         - name: PORT
-          value: "8000"
+          value: "8001"
         - name: WEAVIATE_URL
           valueFrom:
             secretKeyRef:
@@ -60,7 +60,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8001
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -68,7 +68,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8001
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3

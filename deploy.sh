@@ -98,7 +98,7 @@ gcloud run deploy $SERVICE_NAME \
     --region $REGION \
     --allow-unauthenticated \
     --service-account $SERVICE_ACCOUNT_EMAIL \
-    --set-env-vars "PORT=8000,USE_LOCAL_MARKER=false,LOG_LEVEL=INFO" \
+    --set-env-vars "PORT=8001,USE_LOCAL_MARKER=false,LOG_LEVEL=INFO" \
     --set-secrets "WEAVIATE_URL=weaviate-url:latest,WEAVIATE_API_KEY=weaviate-api-key:latest,MARKER_API_KEY=marker-api-key:latest" \
     --cpu 2 \
     --memory 4Gi \
