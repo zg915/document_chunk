@@ -19,6 +19,11 @@ weaviate-client==3.24.0
 # Marker for document processing (API only - local requires separate installation)
 # Note: For local marker, install marker-pdf separately: pip install marker-pdf
 
+# Google Cloud dependencies
+google-cloud-secret-manager==2.16.4
+google-cloud-logging==3.8.0
+google-cloud-monitoring==2.16.0
+
 # Additional utilities
 pydantic==2.5.0
 pathlib2==2.3.7

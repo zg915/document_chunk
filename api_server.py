@@ -13,13 +13,15 @@ Usage:
 import os
 import tempfile
 import uuid
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 import logging
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -32,9 +34,9 @@ from integration import (
     chunk_markdown
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Import Google Cloud integrations
+from secrets_manager import get_weaviate_config, get_marker_config
+from monitoring import logger, log_document_processed, log_api_request, log_error
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -45,14 +47,36 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Add CORS middleware
+# Security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # Configure with specific domains in production
+)
+
+# Add CORS middleware with production-ready settings
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly for production
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    log_api_request(
+        endpoint=request.url.path,
+        status_code=response.status_code,
+        response_time=process_time
+    )
+    
+    return response
 
 # Pydantic models for request/response
 class ConvertToMarkdownRequest(BaseModel):
