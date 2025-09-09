@@ -8,7 +8,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8000
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -26,6 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir watchfiles
 
 # Install marker-pdf separately to avoid dependency conflicts
+# Note: For Cloud Run, we'll use API mode instead of local marker
 RUN pip install --no-cache-dir marker-pdf==1.9.2
 
 # Make sure versions are compatible (works well together)
@@ -62,13 +64,14 @@ RUN mkdir -p /home/app/.cache/datalab /home/app/.cache/huggingface \
 
 USER app
 
-# Expose port
-EXPOSE 8001
+
+# Expose port (Cloud Run will override this)
+EXPOSE $PORT
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+    CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Run the application with auto-reload for development
-# Use watchfiles for better Docker volume watching
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir", "/app"]
+# Run the application with proper Cloud Run configuration
+CMD exec uvicorn api_server:app --host 0.0.0.0 --port $PORT --workers 1
+

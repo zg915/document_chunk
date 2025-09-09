@@ -1,0 +1,78 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: document-processing-api
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    metadata:
+      annotations:
+        # Resource allocation
+        run.googleapis.com/cpu: "2"
+        run.googleapis.com/memory: "4Gi"
+        run.googleapis.com/max-instances: "10"
+        run.googleapis.com/min-instances: "0"
+        # Timeout settings
+        run.googleapis.com/timeout: "3600s"
+        # Security
+        # run.googleapis.com/vpc-access-connector: projects/YOUR_PROJECT_ID/locations/REGION/connectors/CONNECTOR_NAME
+    spec:
+      containerConcurrency: 5
+      timeoutSeconds: 3600
+      containers:
+      - image: gcr.io/YOUR_PROJECT_ID/document-processing-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        # Environment variables
+        - name: PORT
+          value: "8000"
+        - name: WEAVIATE_URL
+          valueFrom:
+            secretKeyRef:
+              name: weaviate-config
+              key: url
+        - name: WEAVIATE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: weaviate-config
+              key: api-key
+        - name: MARKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: marker-config
+              key: api-key
+        - name: MARKER_API_URL
+          value: "https://www.datalab.to/api/v1/marker"
+        - name: USE_LOCAL_MARKER
+          value: "false"
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+  traffic:
+  - percent: 100
+    latestRevision: true

@@ -13,13 +13,18 @@ Usage:
 import os
 import tempfile
 import uuid
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks, Request
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel, Field
+
 import uvicorn
 
 # Import our document processing functions
@@ -31,9 +36,9 @@ from integration import (
     chunk_markdown
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Import Google Cloud integrations
+from secrets_manager import get_weaviate_config, get_marker_config
+from monitoring import logger, log_document_processed, log_api_request, log_error
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -42,14 +47,47 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# Security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # Configure with specific domains in production
+)
+
+# Add CORS middleware with production-ready settings
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    log_api_request(
+        endpoint=request.url.path,
+        status_code=response.status_code,
+        response_time=process_time
+    )
+    
+    return response
+
+# Pydantic models for request/response
+class ConvertToMarkdownRequest(BaseModel):
+    """Request model for convert to markdown endpoint."""
+    file_path: str = Field(..., description="Path to the input file")
+    save_to_file: bool = Field(False, description="Whether to save markdown to file")
+    output_path: Optional[str] = Field(None, description="Custom output path for markdown file")
+    use_local: bool = Field(True, description="Use local Marker (True) or API (False)")
+
 
 # Response models
 class ConvertToMarkdownResponse(BaseModel):

@@ -1,3 +1,4 @@
+
 # Document Processing API
 
 A FastAPI-based service for converting PDFs and images to markdown and storing them in Weaviate vector database.
@@ -55,7 +56,8 @@ docker-compose up
 - `WEAVIATE_URL` - Weaviate database URL
 - `WEAVIATE_API_KEY` - Weaviate API key
 - `MARKER_API_KEY` - Marker API key
-- `USE_LOCAL_MARKER` - Use local Marker (default: false)
+- `USE_LOCAL_MARKER` - Use local Marker (default: true)
+
 
 ---
 
