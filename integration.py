@@ -20,41 +20,15 @@ from typing import Dict, List, Optional, Union
 
 import requests
 import tiktoken
-import weaviate
 from dotenv import load_dotenv
 from PIL import Image
 from unstructured.partition.md import partition_md
-try:
-    # Try newer unstructured version imports
-    from unstructured.chunking.title import chunk_by_title
-    from unstructured.chunking.basic import chunk_elements
-except ImportError:
-    # Fallback for older versions or different import paths
-    try:
-        from unstructured.chunking.title import chunk_by_title
-        from unstructured.chunking.basic import chunk_elements
-    except ImportError:
-        # If still failing, we'll handle this in the function
-        chunk_by_title = None
-        chunk_elements = None
+from unstructured.chunking.title import chunk_by_title
+from unstructured.chunking.basic import chunk_elements
 from weaviate.util import generate_uuid5
-try:
-    # Try newer weaviate-client import
-    from weaviate import WeaviateClient
-    from weaviate.auth import AuthApiKey
-    from weaviate.connect import ConnectionParams, ProtocolParams
-except ImportError:
-    # Fallback for older versions
-    try:
-        from weaviate import Client as WeaviateClient
-        from weaviate.auth import AuthApiKey
-        from weaviate.connect import ConnectionParams, ProtocolParams
-    except ImportError:
-        # If still failing, we'll handle this in the function
-        WeaviateClient = None
-        AuthApiKey = None
-        ConnectionParams = None
-        ProtocolParams = None
+from weaviate import WeaviateClient
+from weaviate.auth import AuthApiKey
+from weaviate.connect import ConnectionParams, ProtocolParams
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -89,7 +63,6 @@ class Config:
     RETRY_DELAY = 10
     
     # Local Marker settings
-    USE_LOCAL_MARKER = os.getenv("USE_LOCAL_MARKER", "true").lower() == "true"
     LOCAL_MARKER_COMMAND = "marker_single"  # Will try full path if not found
     LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
     
@@ -104,13 +77,7 @@ class DocumentProcessor:
     """Handles document conversion and processing operations."""
     
     def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
-        """
-        Initialize the document processor.
-        
-        Args:
-            api_key: Optional API key override
-            api_url: Optional API URL override
-        """
+        """Initialize the document processor."""
         self.api_key = api_key or Config.API_KEY
         self.api_url = api_url or Config.API_URL
         self.headers = {"X-API-Key": self.api_key}
@@ -257,27 +224,45 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command
+            # Build the command with resource-friendly options
             cmd = [
                 marker_cmd,
                 file_path,
                 "--use_llm",
-                "--disable_image_extraction", 
+                "--disable_image_extraction",
+                "--equation_batch_size", "1",  # Reduce batch size to use less memory
+                "--layout_batch_size", "1",
+                "--table_rec_batch_size", "1",
                 "--output_dir", output_dir
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
             
-            # Run the command
+            # Run the command with increased timeout and better memory handling
+            logger.info(f"Executing marker command...")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                timeout=1200,  # 20 minute timeout for larger documents
+                env={**os.environ, 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512'}
             )
             
+            logger.info(f"Marker command completed with return code: {result.returncode}")
+            
             if result.returncode != 0:
-                logger.error(f"Marker command failed: {result.stderr}")
+                if result.returncode == -9:
+                    logger.error(f"Marker process was killed (return code -9), likely due to memory constraints or timeout")
+                    logger.error(f"Consider: 1) Reducing document size, 2) Increasing Docker memory limit, 3) Using smaller batch size")
+                else:
+                    logger.error(f"Marker command failed with return code {result.returncode}")
+                
+                logger.error(f"STDERR output:\n{result.stderr if result.stderr else 'No stderr output'}")
+                logger.error(f"STDOUT output:\n{result.stdout if result.stdout else 'No stdout output'}")
+                logger.error(f"Command was: {' '.join(cmd)}")
+                logger.error(f"Working directory: {os.getcwd()}")
+                logger.error(f"File exists: {os.path.exists(file_path)}")
+                logger.error(f"Output dir exists: {os.path.exists(output_dir)}")
                 return None
             
             # Find the generated markdown file
@@ -285,13 +270,18 @@ class DocumentProcessor:
             base_name = Path(file_path).stem
             markdown_file = os.path.join(output_dir, base_name, f"{base_name}.md")
             
+            logger.info(f"Looking for markdown file at: {markdown_file}")
+            
             if not os.path.exists(markdown_file):
+                logger.warning(f"Expected markdown file not found at: {markdown_file}")
                 # Try to find any .md file recursively in the output directory
                 md_files = list(Path(output_dir).glob("**/*.md"))
                 if md_files:
                     markdown_file = str(md_files[0])
+                    logger.info(f"Found markdown file at: {markdown_file}")
                 else:
                     logger.error(f"No markdown file found in {output_dir}")
+                    logger.error(f"Directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'Directory does not exist'}")
                     return None
             
             # Read the markdown content
@@ -309,13 +299,13 @@ class DocumentProcessor:
             return markdown_content
             
         except subprocess.TimeoutExpired:
-            logger.error("Local Marker processing timed out")
+            logger.error("Local Marker processing timed out after 600 seconds (10 minutes)")
             return None
         except Exception as e:
-            logger.error(f"Error processing with local Marker: {e}")
+            logger.error(f"Error processing with local Marker: {str(e)}")
             return None
 
-# make it API
+
 def convert_to_markdown(
     file_path: str,
     save_to_file: Optional[bool] = False,
@@ -353,21 +343,19 @@ def convert_to_markdown(
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
     
-    # Use config default if use_local is not specified
+    # Default to local processing if use_local is not specified
     if use_local is None:
-        use_local = Config.USE_LOCAL_MARKER
+        use_local = True
     
     # Choose between local and API processing
     if use_local:
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
         
-        # If local processing fails, fallback to API
+        # If local processing fails, raise error instead of fallback
         if markdown_content is None:
-            logger.warning("Local Marker processing failed, falling back to API")
-            use_local = False
-    
-    if not use_local:
+            raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
+    else:
         logger.info("Using Marker API for processing")
         # Upload and get initial response
         result = processor._upload_to_marker(file_path)
@@ -468,17 +456,12 @@ def chunk_markdown(
         logger.info(f"Used title-based chunking")
     except Exception as e:
         logger.warning(f"Title-based chunking failed, falling back to basic: {e}")
-        if chunk_elements is None:
-            # If both chunking methods are unavailable, create simple text chunks
-            logger.warning("No chunking functions available, creating simple text chunks")
-            chunks = _create_simple_chunks(markdown_content, max_chunk_size)
-        else:
-            chunks = chunk_elements(
-                elements,
-                max_characters=max_chunk_size,
-                new_after_n_chars=new_chunk_after,
-                overlap=chunk_overlap
-            )
+        chunks = chunk_elements(
+            elements,
+            max_characters=max_chunk_size,
+            new_after_n_chars=new_chunk_after,
+            overlap=chunk_overlap
+        )
     
     # Prepare final chunks with metadata
     tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -531,53 +514,6 @@ def chunk_markdown(
     
     return final_chunks
 
-
-def _create_simple_chunks(text: str, max_chunk_size: int) -> List:
-    """
-    Create simple text chunks when unstructured chunking is not available.
-    
-    Args:
-        text: Input text to chunk
-        max_chunk_size: Maximum size per chunk
-        
-    Returns:
-        List of simple chunk objects with text content
-    """
-    class SimpleChunk:
-        def __init__(self, content: str):
-            self.content = content
-            self.category = "text"
-        
-        def __str__(self):
-            return self.content
-    
-    # Simple chunking by splitting on paragraphs and combining to max size
-    paragraphs = text.split('\n\n')
-    chunks = []
-    current_chunk = ""
-    
-    for paragraph in paragraphs:
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-            
-        # If adding this paragraph would exceed max size, start new chunk
-        if len(current_chunk) + len(paragraph) + 2 > max_chunk_size and current_chunk:
-            chunks.append(SimpleChunk(current_chunk.strip()))
-            current_chunk = paragraph
-        else:
-            if current_chunk:
-                current_chunk += "\n\n" + paragraph
-            else:
-                current_chunk = paragraph
-    
-    # Add the last chunk if there's content
-    if current_chunk.strip():
-        chunks.append(SimpleChunk(current_chunk.strip()))
-    
-    return chunks
-
-
 def _save_chunks_to_file(chunks: List[Dict], output_path: Union[str, Path]) -> None:
     """
     Save chunks to a JSON file.
@@ -590,7 +526,6 @@ def _save_chunks_to_file(chunks: List[Dict], output_path: Union[str, Path]) -> N
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(chunks, f, indent=2, ensure_ascii=False)
     logger.info(f"Saved {len(chunks)} chunks to: {output_path}")
-
 
 def save_document_to_weaviate(
     client,
@@ -679,7 +614,6 @@ def save_chunks_to_weaviate(
     
     logger.info(f"Saved {len(chunks)} chunks to Weaviate for document {document_id}")
 
-# Make it API
 def delete_document_from_weaviate(
     document_id: str,
     tenant_id: str,
@@ -779,7 +713,6 @@ def delete_document_from_weaviate(
             except Exception as e:
                 logger.warning(f"Error closing Weaviate connection: {e}")
 
-
 def _get_weaviate_client(
     api_key: Optional[str] = None,
     url: Optional[str] = None,
@@ -823,7 +756,7 @@ def _get_weaviate_client(
         client.connect()
         logger.info(f"Connected to Weaviate at {url}")
         return client
-    except Exception as e:
+    except Exception:
         # Fallback to older weaviate-client API
         try:
             import weaviate
@@ -837,11 +770,11 @@ def _get_weaviate_client(
             logger.error(f"Failed to connect to Weaviate: {e2}")
             raise
 
-# Make it API
 def process_document_to_weaviate(
     file_path: str,
     document_id: str,
     tenant_id: str,
+    use_local: Optional[bool] = True,
     client: Optional[object] = None,
     save_markdown: bool = False,
     save_chunks_json: bool = False,
@@ -894,7 +827,8 @@ def process_document_to_weaviate(
         markdown_content = convert_to_markdown(
             file_path=file_path,
             save_to_file=save_markdown,
-            output_path=markdown_path
+            output_path=markdown_path,
+            use_local=use_local
         )
         
         if not markdown_content:
