@@ -1,27 +1,23 @@
 steps:
-  # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     args: 
       - 'build'
       - '-t'
-      - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:$COMMIT_SHA'
+      - 'gcr.io/pdftomarkdown-471519/document-processing-api:$COMMIT_SHA'
       - '-t'
-      - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:latest'
+      - 'gcr.io/pdftomarkdown-471519/document-processing-api:latest'
       - '.'
-    dir: 'document_chunk'
-
-  # Push the container image to Container Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: 
-      - 'push'
-      - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:$COMMIT_SHA'
 
   - name: 'gcr.io/cloud-builders/docker'
     args: 
       - 'push'
-      - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:latest'
+      - 'gcr.io/pdftomarkdown-471519/document-processing-api:$COMMIT_SHA'
 
-  # Deploy container image to Cloud Run
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'push'
+      - 'gcr.io/pdftomarkdown-471519/document-processing-api:latest'
+
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -29,16 +25,16 @@ steps:
       - 'deploy'
       - 'document-processing-api'
       - '--image'
-      - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:$COMMIT_SHA'
+      - 'gcr.io/pdftomarkdown-471519/document-processing-api:$COMMIT_SHA'
       - '--region'
       - 'us-central1'
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
       - '--service-account'
-      - 'document-processing-api@YOUR_PROJECT_ID.iam.gserviceaccount.com'
+      - 'document-processing-api@pdftomarkdown-471519.iam.gserviceaccount.com'
       - '--set-env-vars'
-      - 'PORT=8000,USE_LOCAL_MARKER=false,LOG_LEVEL=INFO'
+      - 'USE_LOCAL_MARKER=false,LOG_LEVEL=INFO'
       - '--set-secrets'
       - 'WEAVIATE_URL=weaviate-url:latest,WEAVIATE_API_KEY=weaviate-api-key:latest,MARKER_API_KEY=marker-api-key:latest'
       - '--cpu'
@@ -54,17 +50,6 @@ steps:
       - '--concurrency'
       - '5'
 
-# Store images in Google Container Registry
 images:
-  - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:$COMMIT_SHA'
-  - 'gcr.io/YOUR_PROJECT_ID/document-processing-api:latest'
-
-# Build options
-options:
-  logging: CLOUD_LOGGING_ONLY
-  machineType: 'E2_HIGHCPU_8'
-  diskSizeGb: 100
-  substitution_option: 'ALLOW_LOOSE'
-
-# Build timeout
-timeout: '1200s'
+  - 'gcr.io/pdftomarkdown-471519/document-processing-api:$COMMIT_SHA'
+  - 'gcr.io/pdftomarkdown-471519/document-processing-api:latest'
