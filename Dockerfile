@@ -1,5 +1,4 @@
-# syntax=docker/dockerfile:1.4
-FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
+FROM python:3.10-slim
 
 # ---------- Runtime env (Cloud Run-friendly) ----------
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -53,13 +52,14 @@ RUN python3 -c "from marker.util import download_font; download_font(); print('M
 COPY . .
 
 # Create an unprivileged user and fix ownership
+# Also create marker_output directory and cache directories with proper permissions
 RUN useradd --create-home --shell /bin/bash app \
- && chown -R app:app /app
-USER app
+ && mkdir -p /app/marker_output /tmp/marker_output /home/app/.cache/datalab /home/app/.cache/surya \
+ && chown -R app:app /app /tmp/marker_output /home/app \
+ && chmod -R 777 /app/marker_output /tmp/marker_output /home/app/.cache
 
-# Cloud Run exposes exactly one container port; your app must bind 0.0.0.0
+
 EXPOSE 8001
 
-# ---------- Start command ----------
-# Replace "api_server:app" with your actual ASGI app import path
-CMD ["python3", "-m", "uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8001"]
+
+CMD bash -c "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && chown -R app:app /app/marker_output /home/app && echo 'Checking CUDA availability...' && python3 -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"CUDA device count: {torch.cuda.device_count()}\"); print(f\"Current device: {torch.cuda.current_device() if torch.cuda.is_available() else None}\")' && su - app -c 'cd /app && CUDA_VISIBLE_DEVICES=0 python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001'"

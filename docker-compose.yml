@@ -1,10 +1,9 @@
-version: '3.8'
-
 services:
   document-api:
     build: .
     ports:
       - "8001:8001"
+    gpus: all
     volumes:
       # Mount the entire source directory for better file watching
       - .:/app
@@ -21,6 +20,8 @@ services:
               count: 1
               capabilities: [gpu]
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - MARKER_API_KEY=${MARKER_API_KEY:-ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI}
       - MARKER_API_URL=${MARKER_API_URL:-https://www.datalab.to/api/v1/marker}
       - WEAVIATE_API_KEY=${WEAVIATE_API_KEY}

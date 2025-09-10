@@ -240,12 +240,21 @@ class DocumentProcessor:
             
             # Run the command with increased timeout and better memory handling
             logger.info(f"Executing marker command...")
+            # Set environment for GPU usage
+            env = os.environ.copy()
+            env.update({
+                'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512',
+                'CUDA_VISIBLE_DEVICES': '0',  # Use first GPU
+                'TORCH_DEVICE': 'cuda',
+                'MARKER_DEVICE': 'cuda',
+                'SURYA_DEVICE': 'cuda'
+            })
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=1200,  # 20 minute timeout for larger documents
-                env={**os.environ, 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512'}
+                env=env
             )
             
             logger.info(f"Marker command completed with return code: {result.returncode}")
