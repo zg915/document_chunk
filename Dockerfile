@@ -27,27 +27,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------- Python deps ----------
 # (Keep requirements.txt minimal & pinned for reproducible builds)
 COPY requirements.txt .
-# Install PyTorch with CUDA support first, then other requirements
+# Install all dependencies in correct order
 RUN pip3 install --upgrade pip && \
-    pip3 install --extra-index-url https://download.pytorch.org/whl/cu121 \
-        torch==2.4.0+cu121 torchvision==0.19.0+cu121 && \
+    pip3 install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cu121 \
+        torch==2.4.0+cu121 \
+        torchvision==0.19.0+cu121 \
+        "transformers>=4.36.0" \
+        "marker-pdf[gpu]==1.9.2" \
+        "unstructured>=0.15.7" \
+        "nltk>=3.9.0" \
+        "uvicorn[standard]>=0.30.0" && \
     pip3 install --no-cache-dir -r requirements.txt
-
-# If marker/unstructured/nltk aren't in requirements.txt, install here:
-RUN pip3 install --no-cache-dir \
-    "transformers>=4.36.0" \
-    "marker-pdf[gpu]==1.9.2" \
-    "unstructured>=0.15.7" \
-    "nltk>=3.9.0" \
-    "uvicorn[standard]>=0.30.0"
 
 # ---------- Pre-fetch runtime assets at BUILD time ----------
 # NLTK packs (avoid runtime downloads on read-only FS)
 RUN python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]"
 
-# Pre-download Marker font and models for GPU usage
-RUN python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')" && \
-    python3 -c "from marker.models import load_all_models; load_all_models(); print('Marker models pre-downloaded.')"
+# Pre-download Marker font (skip models for now - they'll download on first use)
+RUN python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')"
+# Note: Models will be downloaded on first use to avoid build issues
 
 # ---------- App files & non-root user ----------
 # (Copy code after deps to leverage Docker layer caching)
