@@ -35,6 +35,7 @@ RUN pip3 install --upgrade pip && \
 
 # If marker/unstructured/nltk aren't in requirements.txt, install here:
 RUN pip3 install --no-cache-dir \
+    "transformers>=4.36.0" \
     "marker-pdf[gpu]==1.9.2" \
     "unstructured>=0.15.7" \
     "nltk>=3.9.0" \
