@@ -239,13 +239,12 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with marker-specific GPU optimizations
+            # Build the command with valid marker_single options
             cmd = [
                 marker_cmd,
                 file_path,
                 "--use_llm",
                 "--disable_image_extraction",
-                "--batch_multiplier", "3",      # Increase batch multiplier for T4's 16GB VRAM
                 "--output_dir", output_dir
             ]
             
