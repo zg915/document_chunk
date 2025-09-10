@@ -1,4 +1,5 @@
-FROM python:3.10-slim
+# syntax=docker/dockerfile:1.4
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
 # ---------- Runtime env (Cloud Run-friendly) ----------
 ENV PYTHONDONTWRITEBYTECODE=1 \
