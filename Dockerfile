@@ -1,74 +1,58 @@
-# Use Python 3.10 slim image as base
+# syntax=docker/dockerfile:1.4
 FROM python:3.10-slim
 
-# Set working directory
-WORKDIR /app
-
-# Set environment variables
+# ---------- Runtime env (Cloud Run-friendly) ----------
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Writable caches at runtime
+    XDG_CACHE_HOME=/tmp \
+    PIP_CACHE_DIR=/tmp/pip \
+    HF_HOME=/tmp/hf \
+    MPLCONFIGDIR=/tmp/mpl \
+    # NLTK data lives in the image (read-only at runtime, that's fine)
+    NLTK_DATA=/usr/local/nltk_data
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# Copy requirements first for better caching
+# ---------- System deps ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl ca-certificates \
+    libmagic1 poppler-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------- Python deps ----------
+# (Keep requirements.txt minimal & pinned for reproducible builds)
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install watchfiles for better file watching in Docker
-RUN pip install --no-cache-dir watchfiles
+# If marker/unstructured/nltk aren't in requirements.txt, install here:
+RUN pip install --no-cache-dir \
+    "marker-pdf==1.9.2" \
+    "unstructured>=0.15.7" \
+    "nltk>=3.9.0" \
+    "uvicorn[standard]>=0.30.0"
 
-# Install marker-pdf separately to avoid dependency conflicts
-RUN pip install --no-cache-dir marker-pdf==1.9.2
+# ---------- Pre-fetch runtime assets at BUILD time ----------
+# NLTK packs (avoid runtime downloads on read-only FS)
+RUN python -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]"
 
-# Make sure versions are compatible (works well together)
-RUN pip install --no-cache-dir "unstructured>=0.15.7" "nltk>=3.9.0"
+# Pre-download Marker font so it doesn't try writing into site-packages at runtime
+RUN python -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')"
 
-# Set where NLTK should look
-ENV NLTK_DATA=/usr/local/nltk_data
-
-# Pre-download required tokenizers into the image
-RUN python - <<'PY'
-import os, nltk
-os.makedirs("/usr/local/nltk_data", exist_ok=True)
-for pkg in ("punkt", "punkt_tab", "averaged_perceptron_tagger"):
-    nltk.download(pkg, download_dir="/usr/local/nltk_data")
-PY
-
-# Pre-create marker's static directory and set permissions
-RUN mkdir -p /usr/local/lib/python3.10/site-packages/static \
-    && chmod 777 /usr/local/lib/python3.10/site-packages/static
-
-# Copy application code
+# ---------- App files & non-root user ----------
+# (Copy code after deps to leverage Docker layer caching)
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p /app/marker_output /app/temp
-
-# Create non-root user for security
+# Create an unprivileged user and fix ownership
 RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
-
-# Create cache directories with proper permissions before switching to non-root user
-RUN mkdir -p /home/app/.cache/datalab /home/app/.cache/huggingface \
-    && chown -R app:app /home/app/.cache
-
+ && chown -R app:app /app
 USER app
 
-# Expose port
+# Cloud Run exposes exactly one container port; your app must bind 0.0.0.0
 EXPOSE 8001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
-
-# Run the application with auto-reload for development
-# Use watchfiles for better Docker volume watching
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir", "/app"]
+# ---------- Start command ----------
+# Replace "api_server:app" with your actual ASGI app import path
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8001"]
