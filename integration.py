@@ -6,7 +6,8 @@ This module provides functions to:
 2. Chunk markdown content into smaller, manageable pieces for vector storage
 3. Save documents and chunks to Weaviate vector database
 """
-
+#!/usr/bin/env python3
+# Standard library imports
 import json
 import logging
 import mimetypes
@@ -15,27 +16,54 @@ import subprocess
 import tempfile
 import time
 import uuid
+import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
+# Third-party imports
 import requests
 import tiktoken
+import weaviate
 from dotenv import load_dotenv
 from PIL import Image
-from unstructured.partition.md import partition_md
-from unstructured.chunking.title import chunk_by_title
-from unstructured.chunking.basic import chunk_elements
-from weaviate.util import generate_uuid5
 from weaviate import WeaviateClient
 from weaviate.auth import AuthApiKey
 from weaviate.connect import ConnectionParams, ProtocolParams
+from weaviate.util import generate_uuid5
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Unstructured imports
+from unstructured.chunking.basic import chunk_elements
+from unstructured.chunking.title import chunk_by_title
+from unstructured.partition.md import partition_md
+
+# LangChain imports
+from langchain_community.document_loaders import (
+    UnstructuredPDFLoader,
+    UnstructuredWordDocumentLoader,
+    UnstructuredExcelLoader,
+    UnstructuredPowerPointLoader,
+    UnstructuredHTMLLoader,
+    UnstructuredCSVLoader,
+    UnstructuredEPubLoader,
+    UnstructuredODTLoader,
+    UnstructuredRTFLoader,
+    PyMuPDFLoader
+)
+
+# Optional imports
+try:
+    import pytesseract
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+
+# Configuration
+warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv('.env')
+
 
 # Configuration
 class Config:
@@ -390,6 +418,356 @@ def convert_to_markdown(
     
     return markdown_content
 
+
+# new class and functions for fast conversion 
+#create another class called Fast_DocumentProcessor
+class FastFileExtractor:
+    """
+    Fast file extraction class for converting various document types to markdown.
+    
+    Supports PDFs, Word documents, Excel files, PowerPoint presentations, 
+    HTML files, CSV files, and other document formats.
+    """
+    
+    FILE_LOADERS = {
+        '.pdf': 'pdf', '.doc': 'word', '.docx': 'word', '.xls': 'excel', '.xlsx': 'excel',
+        '.ppt': 'powerpoint', '.pptx': 'powerpoint', '.jpg': 'image', '.jpeg': 'image',
+        '.png': 'image', '.gif': 'image', '.bmp': 'image', '.tiff': 'image',
+        '.html': 'html', '.htm': 'html', '.md': 'markdown', '.csv': 'csv',
+        '.epub': 'epub', '.odt': 'odt', '.rtf': 'rtf', '.txt': 'text'
+    }
+    
+    def __init__(self, use_fast_mode: bool = True, max_pages: Optional[int] = None, 
+                 include_metadata: bool = True, ocr_images: bool = False):
+        """
+        Initialize the FastFileExtractor.
+        
+        Args:
+            use_fast_mode: Whether to use fast extraction mode (PyMuPDF for PDFs)
+            max_pages: Maximum number of pages to process (for PDFs)
+            include_metadata: Whether to include metadata in results
+            ocr_images: Whether to enable OCR for image files (requires pytesseract)
+        """
+        self.use_fast_mode = use_fast_mode
+        self.max_pages = max_pages
+        self.include_metadata = include_metadata
+        self.ocr_images = ocr_images and HAS_OCR
+    
+    def extract(self, file_path: str) -> Dict[str, any]:
+        """
+        Extract content from a file and convert to markdown.
+        
+        Args:
+            file_path: Path to the file to extract
+            
+        Returns:
+            Dictionary containing:
+            - markdown: Extracted content as markdown string
+            - metadata: File metadata and extraction info
+            - processing_time: Time taken for extraction
+            - success: Boolean indicating if extraction was successful
+            - error: Error message if extraction failed
+        """
+        start_time = time.time()
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        file_ext = Path(file_path).suffix.lower()
+        file_type = self.FILE_LOADERS.get(file_ext, 'unknown')
+        
+        if file_type == 'unknown':
+            raise ValueError(f"Unsupported file type: {file_ext}")
+        
+        try:
+            if file_type == 'pdf':
+                markdown, metadata = self._extract_pdf(file_path)
+            elif file_type == 'word':
+                markdown, metadata = self._extract_word(file_path)
+            elif file_type == 'excel':
+                markdown, metadata = self._extract_excel(file_path)
+            elif file_type == 'powerpoint':
+                markdown, metadata = self._extract_powerpoint(file_path)
+            elif file_type == 'image':
+                raise ValueError("Image files not supported. Convert to PDF first.")
+            elif file_type in ['html', 'csv', 'markdown', 'text']:
+                markdown, metadata = self._extract_simple(file_path, file_type)
+            else:
+                markdown, metadata = self._extract_unstructured(file_path, file_type)
+            
+            processing_time = time.time() - start_time
+            
+            if self.include_metadata:
+                metadata.update({
+                    'processing_time': f"{processing_time:.2f}s",
+                    'file_path': file_path,
+                    'file_type': file_type,
+                    'file_size': f"{os.path.getsize(file_path) / 1024:.1f} KB"
+                })
+            
+            return {
+                'markdown': markdown,
+                'metadata': metadata,
+                'processing_time': processing_time,
+                'success': True
+            }
+            
+        except Exception as e:
+            return {
+                'markdown': '',
+                'metadata': {'error': str(e)},
+                'processing_time': time.time() - start_time,
+                'success': False,
+                'error': str(e)
+            }
+    
+    def _extract_pdf(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from PDF file."""
+        if self.use_fast_mode:
+            try:
+                loader = PyMuPDFLoader(file_path)
+                docs = loader.load()
+                
+                if self.max_pages:
+                    docs = docs[:self.max_pages]
+                
+                markdown = ""
+                for i, doc in enumerate(docs):
+                    markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
+                
+                return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
+            except Exception:
+                pass
+        
+        loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
+        docs = loader.load()
+        markdown = self._format_documents(docs)
+        return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+    
+    def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from Word document."""
+        loader = UnstructuredWordDocumentLoader(file_path, mode="single")
+        docs = loader.load()
+        return self._format_documents(docs), {'total_elements': len(docs)}
+    
+    def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from Excel file."""
+        loader = UnstructuredExcelLoader(file_path, mode="single")
+        docs = loader.load()
+        
+        markdown = "# Excel Document\n\n"
+        for doc in docs:
+            content = doc.page_content
+            if '\t' in content:
+                markdown += self._format_table(content)
+            else:
+                markdown += content + "\n\n"
+        
+        return markdown, {'total_sheets': len(docs)}
+    
+    def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from PowerPoint presentation."""
+        loader = UnstructuredPowerPointLoader(file_path, mode="single")
+        docs = loader.load()
+        
+        markdown = "# PowerPoint Presentation\n\n"
+        for doc in docs:
+            markdown += doc.page_content + "\n\n"
+        
+        return markdown, {'total_slides': len(docs)}
+    
+    def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
+        """Extract content from simple file types (text, markdown, HTML, CSV)."""
+        if file_type == 'markdown':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read(), {'loader': 'Direct'}
+        
+        elif file_type == 'text':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            return f"# Text Document\n\n{content}", {'loader': 'Direct'}
+        
+        elif file_type == 'html':
+            loader = UnstructuredHTMLLoader(file_path, mode="single")
+            docs = loader.load()
+            return self._format_documents(docs), {'loader': 'HTML'}
+        
+        elif file_type == 'csv':
+            loader = UnstructuredCSVLoader(file_path, mode="single")
+            docs = loader.load()
+            markdown = "# CSV Data\n\n"
+            for doc in docs:
+                markdown += self._format_table(doc.page_content)
+            return markdown, {'loader': 'CSV'}
+    
+    def _extract_unstructured(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
+        """Extract content using unstructured loaders for specialized formats."""
+        loaders = {
+            'epub': UnstructuredEPubLoader,
+            'odt': UnstructuredODTLoader,
+            'rtf': UnstructuredRTFLoader
+        }
+        
+        loader_class = loaders.get(file_type)
+        if not loader_class:
+            raise ValueError(f"No loader available for {file_type}")
+        
+        loader = loader_class(file_path, mode="single")
+        docs = loader.load()
+        return self._format_documents(docs), {'loader': file_type.upper()}
+    
+    def _format_documents(self, docs: List) -> str:
+        """Format document list into markdown string."""
+        return "\n\n".join(doc.page_content for doc in docs) + "\n"
+    
+    def _format_table(self, content: str) -> str:
+        """Format tabular content as markdown table."""
+        lines = content.strip().split('\n')
+        if not lines:
+            return content
+        
+        markdown = "\n"
+        for i, line in enumerate(lines):
+            if '\t' in line:
+                cells = line.split('\t')
+                markdown += '| ' + ' | '.join(cells) + ' |\n'
+                if i == 0:
+                    markdown += '|' + '---|' * len(cells) + '\n'
+            else:
+                markdown += line + '\n'
+        
+        return markdown + "\n"
+    
+    def extract_batch(self, file_paths: List[str]) -> List[Dict]:
+        """
+        Extract content from multiple files in batch.
+        
+        Args:
+            file_paths: List of file paths to extract
+            
+        Returns:
+            List of extraction results for each file
+        """
+        results = []
+        logger.info(f"Starting batch extraction of {len(file_paths)} files")
+        
+        for i, file_path in enumerate(file_paths):
+            try:
+                logger.info(f"Processing file {i+1}/{len(file_paths)}: {Path(file_path).name}")
+                result = self.extract(file_path)
+                results.append(result)
+                
+            except Exception as e:
+                error_result = {
+                    'markdown': '',
+                    'metadata': {'error': str(e), 'file_path': file_path},
+                    'processing_time': 0,
+                    'success': False,
+                    'error': str(e)
+                }
+                results.append(error_result)
+                logger.error(f"Failed to extract {file_path}: {e}")
+        
+        successful = sum(1 for r in results if r['success'])
+        logger.info(f"Batch extraction completed: {successful}/{len(file_paths)} files successful")
+        return results
+
+def fast_convert_to_markdown(
+    file_path: str,
+    save_to_file: Optional[bool] = False,
+    output_path: Optional[str] = None,
+    quality: Optional[str] = "fast",
+    max_pages: Optional[int] = None,
+    include_metadata: Optional[bool] = True
+) -> Optional[str]:
+    """
+    Fast convert a document file to markdown format using FastFileExtractor.
+    
+    Args:
+        file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
+        save_to_file: Whether to save the markdown to a file
+        output_path: Optional custom output path (defaults to input_name.md)
+        quality: Conversion quality mode - "fast" or "balanced"
+        max_pages: Maximum number of pages to process (for PDFs)
+        include_metadata: Whether to include processing metadata in output
+        
+    Returns:
+        Markdown content as string, or None if conversion failed
+        
+    Raises:
+        FileNotFoundError: If the input file doesn't exist
+        ValueError: If the file format is not supported
+    """
+    # Validate input
+    file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
+    file_path = os.path.abspath(file_path)
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    file_ext = os.path.splitext(file_path)[1].lower()
+    if file_ext not in FastFileExtractor.FILE_LOADERS:
+        supported_formats = list(FastFileExtractor.FILE_LOADERS.keys())
+        raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {supported_formats}")
+    
+    # Configure fast extractor based on quality setting
+    use_fast_mode = quality == "fast"
+    ocr_images = quality == "balanced"  # Enable OCR for better quality
+    
+    # Initialize fast extractor
+    extractor = FastFileExtractor(
+        use_fast_mode=use_fast_mode,
+        max_pages=max_pages,
+        include_metadata=include_metadata,
+        ocr_images=ocr_images
+    )
+    
+    logger.info(f"Fast processing file: {file_path} (quality: {quality})")
+    
+    # Extract content
+    try:
+        result = extractor.extract(file_path)
+        
+        if not result['success']:
+            logger.error(f"Fast conversion failed: {result.get('error', 'Unknown error')}")
+            return None
+        
+        markdown_content = result['markdown']
+        processing_time = result['processing_time']
+        
+        if not markdown_content:
+            logger.error("Fast conversion returned empty content")
+            return None
+        
+        logger.info(f"Fast conversion completed in {processing_time:.2f}s")
+        
+        # Optionally append metadata to markdown
+        if include_metadata and result.get('metadata'):
+            metadata = result['metadata']
+            markdown_content += "\n\n---\n\n"
+            markdown_content += "## Processing Metadata\n\n"
+            for key, value in metadata.items():
+                markdown_content += f"- **{key.replace('_', ' ').title()}**: {value}\n"
+        
+    except Exception as e:
+        logger.error(f"Fast conversion error: {e}")
+        return None
+    
+    # Save to file if requested
+    if save_to_file:
+        if output_path is None:
+            output_path = Path(file_path).with_suffix('.md')
+        else:
+            output_path = Path(output_path)
+        
+        try:
+            output_path.write_text(markdown_content, encoding='utf-8')
+            logger.info(f"Fast converted markdown saved to: {output_path}")
+        except Exception as e:
+            logger.error(f"Failed to save markdown file: {e}")
+            return None
+    
+    return markdown_content
 
 def chunk_markdown(
     markdown_input: Union[str, Path],

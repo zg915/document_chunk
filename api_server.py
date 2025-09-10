@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
+import time
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +29,8 @@ from integration import (
     process_document_to_weaviate,
     delete_document_from_weaviate,
     _get_weaviate_client,
-    chunk_markdown
+    chunk_markdown,
+    fast_convert_to_markdown
 )
 
 # Configure logging
@@ -50,6 +52,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Response models
 class ConvertToMarkdownResponse(BaseModel):
@@ -85,6 +88,15 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     weaviate_connected: bool
+
+#create new response model
+class FastConvertToMarkdownResponse(BaseModel):
+    success:bool
+    markdown_content:Optional[str]=None
+    file_path: Optional[str]=None
+    processing_time: Optional[float] = None
+    message: str
+    error: Optional[str] = None
 
 # Supported file formats
 SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp']
@@ -176,6 +188,57 @@ async def convert_doc_to_markdown(
         )
     finally:
         cleanup_temp_file(temp_file_path)
+
+# fast convert files into markdown 
+@app.post("/fast-convert-to-markdown", response_model=FastConvertToMarkdownResponse)
+async def fast_convert_to_mark_down(
+    file: UploadFile = File(...),
+    save_to_file: bool = Query(False)
+):
+    temp_file_path = None
+    start_time = time.time()
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+        
+        # Convert to markdown
+        markdown_content = fast_convert_to_markdown(
+            file_path=temp_file_path,
+            save_to_file=save_to_file
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if markdown_content is None:
+            return FastConvertToMarkdownResponse(
+                success=False,
+                processing_time=processing_time,
+                message="Conversion failed"
+            )
+        
+        return FastConvertToMarkdownResponse(
+            success=True,
+            markdown_content=markdown_content,
+            processing_time=processing_time,
+            content_length=len(markdown_content),
+            message="Conversion successful"
+        )
+        
+    except Exception as e:
+        return FastConvertToMarkdownResponse(
+            success=False,
+            processing_time=time.time() - start_time,
+            message="Conversion failed",
+            error=str(e)
+        )
+    
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
 
 # Process document and save to Weaviate
 @app.post("/process-doc-to-weaviate", response_model=ProcessDocumentResponse)
