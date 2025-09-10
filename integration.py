@@ -224,7 +224,7 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with resource-friendly options and GPU settings
+            # Build the command with resource-friendly options
             cmd = [
                 marker_cmd,
                 file_path,
@@ -233,9 +233,7 @@ class DocumentProcessor:
                 "--equation_batch_size", "1",  # Reduce batch size to use less memory
                 "--layout_batch_size", "1",
                 "--table_rec_batch_size", "1",
-                "--output_dir", output_dir,
-                "--device", "cuda",  # Explicitly set device to GPU
-                "--device_type", "cuda"  # Force CUDA device
+                "--output_dir", output_dir
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")

@@ -10,7 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_CACHE_DIR=/tmp/pip \
     HF_HOME=/tmp/hf \
     MPLCONFIGDIR=/tmp/mpl \
-    NLTK_DATA=/usr/local/nltk_data
+    NLTK_DATA=/usr/local/nltk_data \
+    CUDA_VISIBLE_DEVICES=0 \
+    TORCH_DEVICE=cuda \
+    MARKER_DEVICE=cuda \
+    SURYA_DEVICE=cuda \
+    FORCE_CUDA=1
 
 WORKDIR /app
 
