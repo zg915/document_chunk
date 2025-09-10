@@ -21,12 +21,17 @@ from functools import lru_cache
 
 # GPU optimizations - set before importing torch-based libraries
 os.environ["OMP_NUM_THREADS"] = "1"
-import torch
-if torch.cuda.is_available():
-    torch.set_num_threads(1)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.set_num_threads(1)
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print(f"GPU optimizations enabled: {torch.cuda.get_device_name(0)}")
+except Exception as e:
+    print(f"GPU optimizations failed, continuing without: {e}")
+    torch = None
 
 import requests
 import tiktoken
@@ -275,7 +280,7 @@ class DocumentProcessor:
             logger.info(f"CUDA environment set: CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}")
             
             # Synchronize before starting
-            if torch.cuda.is_available():
+            if torch and torch.cuda.is_available():
                 torch.cuda.synchronize()
             
             t2 = t()
@@ -288,7 +293,7 @@ class DocumentProcessor:
             )
             
             # Synchronize after completion
-            if torch.cuda.is_available():
+            if torch and torch.cuda.is_available():
                 torch.cuda.synchronize()
             
             t3 = t()
