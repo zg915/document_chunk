@@ -17,6 +17,16 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Union
+from functools import lru_cache
+
+# GPU optimizations - set before importing torch-based libraries
+os.environ["OMP_NUM_THREADS"] = "1"
+import torch
+if torch.cuda.is_available():
+    torch.set_num_threads(1)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 import requests
 import tiktoken
@@ -224,36 +234,51 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with resource-friendly options
+            # Build the command with GPU-optimized batch sizes
             cmd = [
                 marker_cmd,
                 file_path,
                 "--use_llm",
                 "--disable_image_extraction",
-                "--equation_batch_size", "1",  # Reduce batch size to use less memory
-                "--layout_batch_size", "1",
-                "--table_rec_batch_size", "1",
+                "--equation_batch_size", "8",   # Increased for GPU utilization
+                "--layout_batch_size", "8",     # Increased for GPU utilization  
+                "--table_rec_batch_size", "4",  # Moderate increase for GPU
                 "--output_dir", output_dir
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
             
-            # Run the command with increased timeout and better memory handling
+            # Run the command with timing and GPU optimizations
             logger.info(f"Executing marker command...")
-            # Set environment for GPU usage
+            
+            # Detailed timing
+            def t(): return time.perf_counter()
+            t0 = t()
+            
+            # Set environment for GPU usage with optimizations
             env = os.environ.copy()
             env.update({
                 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512',
-                'CUDA_VISIBLE_DEVICES': '0',  # Use first GPU
-                'CUDA_LAUNCH_BLOCKING': '1',  # For better GPU debugging
+                'CUDA_VISIBLE_DEVICES': '0',
+                'CUDA_LAUNCH_BLOCKING': '0',  # Disable for better performance
                 'TORCH_DEVICE': 'cuda',
                 'MARKER_DEVICE': 'cuda',
                 'SURYA_DEVICE': 'cuda',
-                'FORCE_CUDA': '1'
+                'FORCE_CUDA': '1',
+                # Mixed precision optimizations
+                'TORCH_CUDNN_V8_API_ENABLED': '1',
+                'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1'
             })
             
-            # Log GPU availability
+            t1 = t()
+            logger.info(f"[TIMING] env_setup={t1-t0:.3f}s")
             logger.info(f"CUDA environment set: CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}")
+            
+            # Synchronize before starting
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
+            t2 = t()
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -261,6 +286,13 @@ class DocumentProcessor:
                 timeout=1200,  # 20 minute timeout for larger documents
                 env=env
             )
+            
+            # Synchronize after completion
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
+            t3 = t()
+            logger.info(f"[TIMING] marker_exec={t3-t2:.3f}s total={t3-t0:.3f}s")
             
             logger.info(f"Marker command completed with return code: {result.returncode}")
             
