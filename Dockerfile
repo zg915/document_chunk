@@ -25,19 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
 # ---------- Python deps ----------
-# (Keep requirements.txt minimal & pinned for reproducible builds)
+# Install all dependencies from requirements.txt
 COPY requirements.txt .
-# Install all dependencies in correct order
 RUN pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir \
-        --extra-index-url https://download.pytorch.org/whl/cu121 \
-        torch \
-        torchvision \
-        "transformers>=4.36.0" \
-        "marker-pdf[gpu]==1.9.2" \
-        "unstructured>=0.15.7" \
-        "nltk>=3.9.0" \
-        "uvicorn[standard]>=0.30.0" && \
     pip3 install --no-cache-dir -r requirements.txt
 
 # ---------- Pre-fetch runtime assets at BUILD time ----------
