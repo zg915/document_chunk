@@ -224,7 +224,7 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with resource-friendly options
+            # Build the command with resource-friendly options and GPU settings
             cmd = [
                 marker_cmd,
                 file_path,
@@ -233,7 +233,9 @@ class DocumentProcessor:
                 "--equation_batch_size", "1",  # Reduce batch size to use less memory
                 "--layout_batch_size", "1",
                 "--table_rec_batch_size", "1",
-                "--output_dir", output_dir
+                "--output_dir", output_dir,
+                "--device", "cuda",  # Explicitly set device to GPU
+                "--device_type", "cuda"  # Force CUDA device
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
@@ -245,10 +247,15 @@ class DocumentProcessor:
             env.update({
                 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512',
                 'CUDA_VISIBLE_DEVICES': '0',  # Use first GPU
+                'CUDA_LAUNCH_BLOCKING': '1',  # For better GPU debugging
                 'TORCH_DEVICE': 'cuda',
                 'MARKER_DEVICE': 'cuda',
-                'SURYA_DEVICE': 'cuda'
+                'SURYA_DEVICE': 'cuda',
+                'FORCE_CUDA': '1'
             })
+            
+            # Log GPU availability
+            logger.info(f"CUDA environment set: CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
