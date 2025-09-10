@@ -1,45 +1,40 @@
 # syntax=docker/dockerfile:1.4
 FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
-# ---------- Runtime env (Cloud Run-friendly) ----------
+# ---------- Runtime env ----------
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    PIP_NO_CACHE_DIR=0 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    # Writable caches at runtime
     XDG_CACHE_HOME=/tmp \
     PIP_CACHE_DIR=/tmp/pip \
     HF_HOME=/tmp/hf \
     MPLCONFIGDIR=/tmp/mpl \
-    # NLTK data lives in the image (read-only at runtime, that's fine)
     NLTK_DATA=/usr/local/nltk_data
 
 WORKDIR /app
 
-# ---------- System deps ----------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# ---------- System deps (rarely changes) ----------
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-pip python3.10-venv \
     build-essential curl ca-certificates git \
     libmagic1 poppler-utils tesseract-ocr \
- && rm -rf /var/lib/apt/lists/* \
+    libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
-# ---------- Python deps ----------
-# Install all dependencies from requirements.txt
+# ---------- Python deps (use cache mount for pip) ----------
 COPY requirements.txt .
-RUN pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --upgrade pip && \
+    pip3 install -r requirements.txt
 
-# ---------- Pre-fetch runtime assets at BUILD time ----------
-# NLTK packs (avoid runtime downloads on read-only FS)
-RUN python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]"
+# ---------- Pre-fetch runtime assets ----------
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]" && \
+    python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')"
 
-# Pre-download Marker font (skip models for now - they'll download on first use)
-RUN python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')"
-# Note: Models will be downloaded on first use to avoid build issues
-
-# ---------- App files & non-root user ----------
-# (Copy code after deps to leverage Docker layer caching)
+# ---------- App files (changes frequently - keep last) ----------
 COPY . .
 
 # Create an unprivileged user and fix ownership
