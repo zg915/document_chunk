@@ -31,8 +31,8 @@ COPY requirements.txt .
 RUN pip3 install --upgrade pip && \
     pip3 install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cu121 \
-        torch==2.4.0+cu121 \
-        torchvision==0.19.0+cu121 \
+        torch \
+        torchvision \
         "transformers>=4.36.0" \
         "marker-pdf[gpu]==1.9.2" \
         "unstructured>=0.15.7" \
