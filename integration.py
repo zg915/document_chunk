@@ -221,70 +221,42 @@ class DocumentProcessor:
             Markdown content or None if failed
         """
         try:
-            # Try using marker Python API directly (more efficient with preloaded models)
             logger.info("Using marker Python API for GPU-optimized processing")
             
-            # Import marker modules - try different import patterns for compatibility
+            # Import correct marker modules according to PyPI documentation
+            from marker.converters.pdf import PdfConverter
+            from marker.models import create_model_dict
+            from marker.output import text_from_rendered
+            
+            # Use preloaded models if available
             try:
-                # Try newer marker-pdf API
-                from marker.convert import convert_single
-                from marker.models import create_model_dict
-                
-                # Use preloaded models if available
-                try:
-                    from preload_models import get_preloaded_models
-                    models = get_preloaded_models()
-                    if models:
-                        logger.info(f"✅ Using {len(models)} preloaded models")
-                    else:
-                        logger.info("Loading models...")
-                        models = create_model_dict()
-                except ImportError:
+                from preload_models import get_preloaded_models
+                models = get_preloaded_models()
+                if models:
+                    logger.info(f"✅ Using {len(models)} preloaded models")
+                else:
                     logger.info("Loading models...")
                     models = create_model_dict()
-                
-                # Convert PDF to markdown using marker API
-                logger.info(f"Converting {file_path} with GPU acceleration...")
-                start_time = time.perf_counter()
-                
-                # Run conversion with GPU settings
-                full_text, metadata = convert_single(
-                    file_path,
-                    models,
-                    use_llm=True,
-                    disable_image_extraction=True,
-                    batch_multiplier=2  # Increase batch size for GPU
-                )
-                
-                processing_time = time.perf_counter() - start_time
-                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
-                return full_text
-                
             except ImportError:
-                # Fallback to alternative import structure
-                from marker.converter import convert_pdf
-                from marker.models import create_model_dict
-                
                 logger.info("Loading models...")
                 models = create_model_dict()
-                
-                logger.info(f"Converting {file_path} with GPU acceleration...")
-                start_time = time.perf_counter()
-                
-                # Convert with fallback API
-                result = convert_pdf(file_path, models)
-                
-                processing_time = time.perf_counter() - start_time
-                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
-                
-                # Extract markdown from result
-                if isinstance(result, tuple):
-                    return result[0] if result[0] else None
-                elif isinstance(result, dict):
-                    return result.get('markdown', '') or result.get('text', '')
-                else:
-                    return str(result) if result else None
-                
+            
+            # Create converter with GPU optimizations
+            converter = PdfConverter(artifact_dict=models)
+            
+            # Convert PDF to markdown
+            logger.info(f"Converting {file_path} with GPU acceleration...")
+            start_time = time.perf_counter()
+            
+            # Run conversion
+            rendered = converter(file_path)
+            text, _, images = text_from_rendered(rendered)
+            
+            processing_time = time.perf_counter() - start_time
+            logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
+            
+            return text
+            
         except ImportError as e:
             logger.error(f"Marker Python API not available: {e}")
             logger.error("Please ensure marker-pdf is installed: pip install marker-pdf[gpu]")
