@@ -121,6 +121,9 @@ def preload_marker_models():
         global _preloaded_models
         _preloaded_models = models
         
+        # Also store in module-level for get_preloaded_models function
+        get_preloaded_models._preloaded_models = models
+        
         return models
         
     except Exception as e:
@@ -130,7 +133,8 @@ def preload_marker_models():
 def get_preloaded_models():
     """Get preloaded models if available."""
     global _preloaded_models
-    return getattr(get_preloaded_models, '_preloaded_models', None)
+    # Try module attribute first, then global variable
+    return getattr(get_preloaded_models, '_preloaded_models', _preloaded_models)
 
 def validate_preload():
     """Validate that models are properly preloaded."""
