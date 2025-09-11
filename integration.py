@@ -241,16 +241,38 @@ class DocumentProcessor:
                 logger.info("Loading models...")
                 models = create_model_dict()
             
-            # Create converter with GPU optimizations
-            converter = PdfConverter(artifact_dict=models)
+            # Create optimized configuration for faster processing
+            from marker.config.parser import ConfigParser
+            
+            # Speed optimizations
+            config = {
+                "batch_multiplier": 4,  # Increase from default for Tesla T4
+                "ocr_all_pages": False,  # Only OCR when needed
+                "disable_ocr": False,  # Keep OCR but optimize usage
+                "paginate_output": False,  # Faster without pagination
+                "disable_image_extraction": True,  # Skip image extraction for speed
+                "workers": 4,  # Parallel processing
+                "use_llm": True,  # Enable LLM for better accuracy
+                "force_gpu": True,  # Force GPU usage
+                "ray_workers": 4,  # Ray parallel processing
+            }
+            
+            config_parser = ConfigParser(config)
+            
+            # Create converter with GPU optimizations and config
+            converter = PdfConverter(
+                artifact_dict=models,
+                config=config_parser.generate_config_dict()
+            )
             
             # Convert PDF to markdown
             logger.info(f"Converting {file_path} with GPU acceleration...")
+            logger.info(f"Settings: batch_multiplier=4, ocr_all_pages=False, workers=4")
             start_time = time.perf_counter()
             
             # Run conversion
             rendered = converter(file_path)
-            text, _, images = text_from_rendered(rendered)
+            text, _, _ = text_from_rendered(rendered)
             
             processing_time = time.perf_counter() - start_time
             logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
