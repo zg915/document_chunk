@@ -77,9 +77,13 @@ class Config:
     MAX_RETRIES = 30
     RETRY_DELAY = 10
     
-    # Local Marker settings
-    LOCAL_MARKER_COMMAND = "marker_single"  # Will try full path if not found
+    # Local Marker settings - using marker instead of marker_single for batch processing
+    LOCAL_MARKER_COMMAND = "marker"  # Use marker for consistent batch processing
     LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
+    
+    # GPU optimization settings
+    NUM_WORKERS = int(os.getenv("MARKER_NUM_WORKERS", "4"))  # 4-7 range recommended
+    PAGE_BATCH_SIZE = int(os.getenv("MARKER_PAGE_BATCH", "6"))  # 4-8 range recommended
     
     # Weaviate settings
     WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
@@ -222,12 +226,12 @@ class DocumentProcessor:
             output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
             os.makedirs(output_dir, exist_ok=True)
             
-            # Find marker_single command
-            marker_cmd = "marker_single"
+            # Find marker command (not marker_single for better batch processing)
+            marker_cmd = Config.LOCAL_MARKER_COMMAND
             possible_paths = [
-                "marker_single",
-                "/usr/local/bin/marker_single",
-                "/usr/bin/marker_single"
+                "marker",
+                "/usr/local/bin/marker",
+                "/usr/bin/marker"
             ]
             
             for path in possible_paths:
@@ -239,16 +243,29 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with valid marker_single options
+            # Build the command with marker options for batch processing
             cmd = [
                 marker_cmd,
                 file_path,
+                "--output_dir", output_dir,
                 "--use_llm",
                 "--disable_image_extraction",
-                "--output_dir", output_dir
+                "--workers", str(Config.NUM_WORKERS),
+                "--page_batch_size", str(Config.PAGE_BATCH_SIZE)
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
+            
+            # Check for preloaded models
+            try:
+                from preload_models import get_preloaded_models
+                preloaded = get_preloaded_models()
+                if preloaded:
+                    logger.info(f"✅ Using preloaded models ({len(preloaded)} models available)")
+                else:
+                    logger.info("⚠️  No preloaded models found, marker will load them on demand")
+            except ImportError:
+                logger.info("⚠️  Preload module not available, marker will load models on demand")
             
             # Run the command with timing and GPU optimizations
             logger.info(f"Executing marker command...")
@@ -269,7 +286,12 @@ class DocumentProcessor:
                 'FORCE_CUDA': '1',
                 # Mixed precision optimizations
                 'TORCH_CUDNN_V8_API_ENABLED': '1',
-                'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1'
+                'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+                # Batch processing optimizations
+                'MARKER_NUM_WORKERS': str(Config.NUM_WORKERS),
+                'MARKER_PAGE_BATCH': str(Config.PAGE_BATCH_SIZE),
+                # Model reuse - let marker know models might be preloaded
+                'MARKER_REUSE_MODELS': '1'
             })
             
             t1 = t()
