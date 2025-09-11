@@ -34,7 +34,11 @@ RUN --mount=type=cache,target=/var/cache/apt \
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --upgrade pip && \
-    pip3 install -r requirements.txt
+    pip3 install -r requirements.txt && \
+    # Ensure marker CLI commands are available
+    which marker || echo "marker command not found" && \
+    which marker_single || echo "marker_single command not found" && \
+    python3 -c "import marker; print('Marker package installed successfully')"
 
 # ---------- Pre-fetch runtime assets ----------
 RUN --mount=type=cache,target=/root/.cache/pip \
