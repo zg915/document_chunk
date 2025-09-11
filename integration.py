@@ -246,15 +246,31 @@ class DocumentProcessor:
             
             # Speed optimizations
             config = {
-                "batch_multiplier": 4,  # Increase from default for Tesla T4
+                # GPU optimization for Tesla T4 (16GB VRAM)
+                "batch_multiplier": 8,  # Increase to 8x for Tesla T4
+                "ocr_batch_size": 32,  # Larger OCR batch size
+                "layout_batch_size": 8,  # Larger layout batch
+                "table_rec_batch_size": 8,  # Larger table batch
+                
+                # OCR optimizations
                 "ocr_all_pages": False,  # Only OCR when needed
-                "disable_ocr": False,  # Keep OCR but optimize usage
+                "disable_ocr": False,  # Keep OCR but optimize
+                "ocr_error_detection": False,  # Skip OCR error detection for speed
+                "detect_language": False,  # Skip language detection
+                
+                # Processing optimizations
                 "paginate_output": False,  # Faster without pagination
-                "disable_image_extraction": True,  # Skip image extraction for speed
-                "workers": 4,  # Parallel processing
-                "use_llm": True,  # Enable LLM for better accuracy
+                "disable_image_extraction": True,  # Skip images
+                "skip_table_detection": False,  # Keep tables but optimize
+                
+                # Parallel processing
+                "workers": 6,  # More parallel workers
+                "ray_workers": 6,  # Ray parallel processing
+                
+                # Other optimizations
+                "use_llm": False,  # No LLM for speed
                 "force_gpu": True,  # Force GPU usage
-                "ray_workers": 4,  # Ray parallel processing
+                "langs": ["en"],  # Skip language detection
             }
             
             config_parser = ConfigParser(config)
