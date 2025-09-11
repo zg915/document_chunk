@@ -221,182 +221,73 @@ class DocumentProcessor:
             Markdown content or None if failed
         """
         try:
-            # Create unique output directory for this job
-            job_id = str(uuid.uuid4())[:8]
-            output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
-            os.makedirs(output_dir, exist_ok=True)
+            # Try using marker Python API directly (more efficient with preloaded models)
+            logger.info("Using marker Python API for GPU-optimized processing")
             
-            # Use marker_chunk_convert for optimal GPU batch processing
-            marker_commands = [
-                "marker_chunk_convert",  # Optimal for GPU batch processing
-                "/usr/local/bin/marker_chunk_convert",
-                "/usr/bin/marker_chunk_convert"
-            ]
-            
-            marker_cmd = None
-            
-            # Find marker_chunk_convert command
-            for path in marker_commands:
-                try:
-                    result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        marker_cmd = path
-                        break
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
-            
-            if marker_cmd is None:
-                raise RuntimeError("marker_chunk_convert command not found")
-            
-            # marker_chunk_convert requires directory input/output structure
-            temp_input_dir = os.path.join(output_dir, "input")
-            temp_output_dir = os.path.join(output_dir, "output")
-            os.makedirs(temp_input_dir, exist_ok=True)
-            os.makedirs(temp_output_dir, exist_ok=True)
-            
-            # Copy file to input directory
-            import shutil
-            temp_file_path = os.path.join(temp_input_dir, os.path.basename(file_path))
-            shutil.copy2(file_path, temp_file_path)
-            
-            # Build marker_chunk_convert command for optimal GPU batch processing
-            cmd = [marker_cmd, temp_input_dir, temp_output_dir]
-            
-            logger.info(f"Running local Marker: {' '.join(cmd)}")
-            
-            # Check for preloaded models
+            # Import marker modules - try different import patterns for compatibility
             try:
-                from preload_models import get_preloaded_models
-                preloaded = get_preloaded_models()
-                if preloaded:
-                    logger.info(f"✅ Using preloaded models ({len(preloaded)} models available)")
-                else:
-                    logger.info("⚠️  No preloaded models found, marker will load them on demand")
-            except ImportError:
-                logger.info("⚠️  Preload module not available, marker will load models on demand")
-            
-            # Run the command with timing and GPU optimizations
-            logger.info(f"Executing marker command...")
-            
-            # Detailed timing
-            def t(): return time.perf_counter()
-            t0 = t()
-            
-            # Set environment for optimal GPU batch processing with marker_chunk_convert
-            env = os.environ.copy()
-            env.update({
-                # GPU optimization
-                'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512',
-                'CUDA_VISIBLE_DEVICES': '0',
-                'CUDA_LAUNCH_BLOCKING': '0',  # Disable for better performance
-                'TORCH_DEVICE': 'cuda',
-                'MARKER_DEVICE': 'cuda',
-                'SURYA_DEVICE': 'cuda',
-                'FORCE_CUDA': '1',
-                # Mixed precision optimizations
-                'TORCH_CUDNN_V8_API_ENABLED': '1',
-                'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
-                # marker_chunk_convert optimal settings for Tesla T4
-                'INFERENCE_RAM': '16',  # Tesla T4 has 16GB VRAM
-                'NUM_DEVICES': '1',     # Single GPU
-                'NUM_WORKERS': '4',     # Optimal for T4: 16GB ÷ 4GB per task
-                'VRAM_PER_TASK': '4',   # 4GB per task as recommended
-                # Model reuse - let marker know models might be preloaded
-                'MARKER_REUSE_MODELS': '1',
-                # Indicate models have been preloaded
-                'MODELS_PRELOADED': '1'
-            })
-            
-            t1 = t()
-            logger.info(f"[TIMING] env_setup={t1-t0:.3f}s")
-            logger.info(f"CUDA environment set: CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}")
-            
-            # Synchronize before starting
-            if torch and torch.cuda.is_available():
-                torch.cuda.synchronize()
-            
-            t2 = t()
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=1200,  # 20 minute timeout for larger documents
-                env=env
-            )
-            
-            # Synchronize after completion
-            if torch and torch.cuda.is_available():
-                torch.cuda.synchronize()
-            
-            t3 = t()
-            logger.info(f"[TIMING] marker_exec={t3-t2:.3f}s total={t3-t0:.3f}s")
-            
-            logger.info(f"Marker command completed with return code: {result.returncode}")
-            
-            if result.returncode != 0:
-                if result.returncode == -9:
-                    logger.error(f"Marker process was killed (return code -9), likely due to memory constraints or timeout")
-                    logger.error(f"Consider: 1) Reducing document size, 2) Increasing Docker memory limit, 3) Using smaller batch size")
-                else:
-                    logger.error(f"Marker command failed with return code {result.returncode}")
+                # Try newer marker-pdf API
+                from marker.convert import convert_single
+                from marker.models import create_model_dict
                 
-                logger.error(f"STDERR output:\n{result.stderr if result.stderr else 'No stderr output'}")
-                logger.error(f"STDOUT output:\n{result.stdout if result.stdout else 'No stdout output'}")
-                logger.error(f"Command was: {' '.join(cmd)}")
-                logger.error(f"Working directory: {os.getcwd()}")
-                logger.error(f"File exists: {os.path.exists(file_path)}")
-                logger.error(f"Output dir exists: {os.path.exists(output_dir)}")
-                return None
-            
-            # Find the generated markdown file
-            base_name = Path(file_path).stem
-            
-            # Try different possible locations for the markdown file (marker_chunk_convert structure)
-            possible_locations = [
-                # marker_chunk_convert pattern: output_dir/output/filename.md
-                os.path.join(temp_output_dir, f"{base_name}.md"),
-                # marker_chunk_convert with subdirectory: output_dir/output/filename/filename.md
-                os.path.join(temp_output_dir, base_name, f"{base_name}.md"),
-                # fallback patterns
-                os.path.join(output_dir, f"{base_name}.md"),
-                os.path.join(output_dir, base_name, f"{base_name}.md")
-            ]
-            
-            markdown_file = None
-            for location in possible_locations:
-                if os.path.exists(location):
-                    markdown_file = location
-                    logger.info(f"Found markdown file at: {markdown_file}")
-                    break
-            
-            if markdown_file is None:
-                logger.warning(f"Expected markdown file not found in standard locations")
-                # Try to find any .md file recursively in the output directory
-                md_files = list(Path(output_dir).glob("**/*.md"))
-                if md_files:
-                    markdown_file = str(md_files[0])
-                    logger.info(f"Found markdown file at: {markdown_file}")
+                # Use preloaded models if available
+                try:
+                    from preload_models import get_preloaded_models
+                    models = get_preloaded_models()
+                    if models:
+                        logger.info(f"✅ Using {len(models)} preloaded models")
+                    else:
+                        logger.info("Loading models...")
+                        models = create_model_dict()
+                except ImportError:
+                    logger.info("Loading models...")
+                    models = create_model_dict()
+                
+                # Convert PDF to markdown using marker API
+                logger.info(f"Converting {file_path} with GPU acceleration...")
+                start_time = time.perf_counter()
+                
+                # Run conversion with GPU settings
+                full_text, metadata = convert_single(
+                    file_path,
+                    models,
+                    use_llm=True,
+                    disable_image_extraction=True,
+                    batch_multiplier=2  # Increase batch size for GPU
+                )
+                
+                processing_time = time.perf_counter() - start_time
+                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
+                return full_text
+                
+            except ImportError:
+                # Fallback to alternative import structure
+                from marker.converter import convert_pdf
+                from marker.models import create_model_dict
+                
+                logger.info("Loading models...")
+                models = create_model_dict()
+                
+                logger.info(f"Converting {file_path} with GPU acceleration...")
+                start_time = time.perf_counter()
+                
+                # Convert with fallback API
+                result = convert_pdf(file_path, models)
+                
+                processing_time = time.perf_counter() - start_time
+                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
+                
+                # Extract markdown from result
+                if isinstance(result, tuple):
+                    return result[0] if result[0] else None
+                elif isinstance(result, dict):
+                    return result.get('markdown', '') or result.get('text', '')
                 else:
-                    logger.error(f"No markdown file found in {output_dir}")
-                    logger.error(f"Directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'Directory does not exist'}")
-                    return None
-            
-            # Read the markdown content
-            with open(markdown_file, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            
-            # Clean up the temporary output directory
-            try:
-                import shutil
-                shutil.rmtree(output_dir)
-            except Exception as e:
-                logger.warning(f"Could not clean up temp directory {output_dir}: {e}")
-            
-            logger.info(f"Successfully processed with local Marker")
-            return markdown_content
-            
-        except subprocess.TimeoutExpired:
-            logger.error("Local Marker processing timed out after 600 seconds (10 minutes)")
+                    return str(result) if result else None
+                
+        except ImportError as e:
+            logger.error(f"Marker Python API not available: {e}")
+            logger.error("Please ensure marker-pdf is installed: pip install marker-pdf[gpu]")
             return None
         except Exception as e:
             logger.error(f"Error processing with local Marker: {str(e)}")
