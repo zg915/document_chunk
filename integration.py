@@ -251,7 +251,8 @@ class DocumentProcessor:
                 "--use_llm",
                 "--disable_image_extraction",
                 "--workers", str(Config.NUM_WORKERS),
-                "--page_batch_size", str(Config.PAGE_BATCH_SIZE)
+                "--layout_batch_size", str(Config.PAGE_BATCH_SIZE),
+                "--table_rec_batch_size", str(Config.PAGE_BATCH_SIZE)
             ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
@@ -291,7 +292,9 @@ class DocumentProcessor:
                 'MARKER_NUM_WORKERS': str(Config.NUM_WORKERS),
                 'MARKER_PAGE_BATCH': str(Config.PAGE_BATCH_SIZE),
                 # Model reuse - let marker know models might be preloaded
-                'MARKER_REUSE_MODELS': '1'
+                'MARKER_REUSE_MODELS': '1',
+                # Indicate models have been preloaded
+                'MODELS_PRELOADED': '1'
             })
             
             t1 = t()
