@@ -268,7 +268,7 @@ class DocumentProcessor:
                 "ray_workers": 6,  # Ray parallel processing
                 
                 # Other optimizations
-                "use_llm": False,  # No LLM for speed
+                "use_llm": True,  # No LLM for speed
                 "force_gpu": True,  # Force GPU usage
                 "langs": ["en"],  # Skip language detection
             }
