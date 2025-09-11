@@ -226,18 +226,17 @@ class DocumentProcessor:
             output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
             os.makedirs(output_dir, exist_ok=True)
             
-            # Try marker_single first for single file processing, fallback to marker with directory
-            marker_single_paths = [
-                "marker_single",
-                "/usr/local/bin/marker_single",
-                "/usr/bin/marker_single"
+            # Use marker_chunk_convert for optimal GPU batch processing
+            marker_commands = [
+                "marker_chunk_convert",  # Optimal for GPU batch processing
+                "/usr/local/bin/marker_chunk_convert",
+                "/usr/bin/marker_chunk_convert"
             ]
             
             marker_cmd = None
-            use_directory_mode = False
             
-            # First try marker_single for direct file processing
-            for path in marker_single_paths:
+            # Find marker_chunk_convert command
+            for path in marker_commands:
                 try:
                     result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
@@ -246,56 +245,22 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # If marker_single not found, use marker with directory mode
             if marker_cmd is None:
-                marker_paths = [
-                    "marker",
-                    "/usr/local/bin/marker", 
-                    "/usr/bin/marker"
-                ]
-                for path in marker_paths:
-                    try:
-                        result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
-                        if result.returncode == 0:
-                            marker_cmd = path
-                            use_directory_mode = True
-                            break
-                    except (subprocess.TimeoutExpired, FileNotFoundError):
-                        continue
+                raise RuntimeError("marker_chunk_convert command not found")
             
-            if marker_cmd is None:
-                raise RuntimeError("Neither marker nor marker_single command found")
+            # marker_chunk_convert requires directory input/output structure
+            temp_input_dir = os.path.join(output_dir, "input")
+            temp_output_dir = os.path.join(output_dir, "output")
+            os.makedirs(temp_input_dir, exist_ok=True)
+            os.makedirs(temp_output_dir, exist_ok=True)
             
-            # Build the command based on which marker command we're using
-            if use_directory_mode:
-                # For marker command, we need to create a temp directory with the file
-                temp_input_dir = os.path.join(output_dir, "input")
-                os.makedirs(temp_input_dir, exist_ok=True)
-                
-                # Copy file to temp directory
-                import shutil
-                temp_file_path = os.path.join(temp_input_dir, os.path.basename(file_path))
-                shutil.copy2(file_path, temp_file_path)
-                
-                cmd = [
-                    marker_cmd,
-                    temp_input_dir,
-                    "--output_dir", output_dir,
-                    "--use_llm",
-                    "--disable_image_extraction",
-                    "--workers", str(Config.NUM_WORKERS),
-                    "--layout_batch_size", str(Config.PAGE_BATCH_SIZE),
-                    "--table_rec_batch_size", str(Config.PAGE_BATCH_SIZE)
-                ]
-            else:
-                # For marker_single, process file directly
-                cmd = [
-                    marker_cmd,
-                    file_path,
-                    "--output_dir", output_dir,
-                    "--use_llm",
-                    "--disable_image_extraction"
-                ]
+            # Copy file to input directory
+            import shutil
+            temp_file_path = os.path.join(temp_input_dir, os.path.basename(file_path))
+            shutil.copy2(file_path, temp_file_path)
+            
+            # Build marker_chunk_convert command for optimal GPU batch processing
+            cmd = [marker_cmd, temp_input_dir, temp_output_dir]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
             
@@ -317,9 +282,10 @@ class DocumentProcessor:
             def t(): return time.perf_counter()
             t0 = t()
             
-            # Set environment for GPU usage with optimizations
+            # Set environment for optimal GPU batch processing with marker_chunk_convert
             env = os.environ.copy()
             env.update({
+                # GPU optimization
                 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512',
                 'CUDA_VISIBLE_DEVICES': '0',
                 'CUDA_LAUNCH_BLOCKING': '0',  # Disable for better performance
@@ -330,9 +296,11 @@ class DocumentProcessor:
                 # Mixed precision optimizations
                 'TORCH_CUDNN_V8_API_ENABLED': '1',
                 'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
-                # Batch processing optimizations
-                'MARKER_NUM_WORKERS': str(Config.NUM_WORKERS),
-                'MARKER_PAGE_BATCH': str(Config.PAGE_BATCH_SIZE),
+                # marker_chunk_convert optimal settings for Tesla T4
+                'INFERENCE_RAM': '16',  # Tesla T4 has 16GB VRAM
+                'NUM_DEVICES': '1',     # Single GPU
+                'NUM_WORKERS': '4',     # Optimal for T4: 16GB ÷ 4GB per task
+                'VRAM_PER_TASK': '4',   # 4GB per task as recommended
                 # Model reuse - let marker know models might be preloaded
                 'MARKER_REUSE_MODELS': '1',
                 # Indicate models have been preloaded
@@ -383,14 +351,15 @@ class DocumentProcessor:
             # Find the generated markdown file
             base_name = Path(file_path).stem
             
-            # Try different possible locations for the markdown file
+            # Try different possible locations for the markdown file (marker_chunk_convert structure)
             possible_locations = [
-                # marker_single pattern: filename/filename.md
-                os.path.join(output_dir, base_name, f"{base_name}.md"),
-                # marker directory pattern: output_dir/filename.md  
+                # marker_chunk_convert pattern: output_dir/output/filename.md
+                os.path.join(temp_output_dir, f"{base_name}.md"),
+                # marker_chunk_convert with subdirectory: output_dir/output/filename/filename.md
+                os.path.join(temp_output_dir, base_name, f"{base_name}.md"),
+                # fallback patterns
                 os.path.join(output_dir, f"{base_name}.md"),
-                # nested pattern: output_dir/input/filename/filename.md
-                os.path.join(output_dir, "input", base_name, f"{base_name}.md")
+                os.path.join(output_dir, base_name, f"{base_name}.md")
             ]
             
             markdown_file = None

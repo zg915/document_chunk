@@ -50,7 +50,11 @@ ENV MARKER_NUM_WORKERS=4 \
     MARKER_PAGE_BATCH=6 \
     PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
     TORCH_CUDNN_V8_API_ENABLED=1 \
-    TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
+    TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1 \
+    INFERENCE_RAM=16 \
+    NUM_DEVICES=1 \
+    NUM_WORKERS=4 \
+    VRAM_PER_TASK=4
 
 # ---------- App files (changes frequently - keep last) ----------
 COPY . .
