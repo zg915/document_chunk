@@ -226,15 +226,18 @@ class DocumentProcessor:
             output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
             os.makedirs(output_dir, exist_ok=True)
             
-            # Find marker command (not marker_single for better batch processing)
-            marker_cmd = Config.LOCAL_MARKER_COMMAND
-            possible_paths = [
-                "marker",
-                "/usr/local/bin/marker",
-                "/usr/bin/marker"
+            # Try marker_single first for single file processing, fallback to marker with directory
+            marker_single_paths = [
+                "marker_single",
+                "/usr/local/bin/marker_single",
+                "/usr/bin/marker_single"
             ]
             
-            for path in possible_paths:
+            marker_cmd = None
+            use_directory_mode = False
+            
+            # First try marker_single for direct file processing
+            for path in marker_single_paths:
                 try:
                     result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
@@ -243,17 +246,56 @@ class DocumentProcessor:
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             
-            # Build the command with marker options for batch processing
-            cmd = [
-                marker_cmd,
-                file_path,
-                "--output_dir", output_dir,
-                "--use_llm",
-                "--disable_image_extraction",
-                "--workers", str(Config.NUM_WORKERS),
-                "--layout_batch_size", str(Config.PAGE_BATCH_SIZE),
-                "--table_rec_batch_size", str(Config.PAGE_BATCH_SIZE)
-            ]
+            # If marker_single not found, use marker with directory mode
+            if marker_cmd is None:
+                marker_paths = [
+                    "marker",
+                    "/usr/local/bin/marker", 
+                    "/usr/bin/marker"
+                ]
+                for path in marker_paths:
+                    try:
+                        result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            marker_cmd = path
+                            use_directory_mode = True
+                            break
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        continue
+            
+            if marker_cmd is None:
+                raise RuntimeError("Neither marker nor marker_single command found")
+            
+            # Build the command based on which marker command we're using
+            if use_directory_mode:
+                # For marker command, we need to create a temp directory with the file
+                temp_input_dir = os.path.join(output_dir, "input")
+                os.makedirs(temp_input_dir, exist_ok=True)
+                
+                # Copy file to temp directory
+                import shutil
+                temp_file_path = os.path.join(temp_input_dir, os.path.basename(file_path))
+                shutil.copy2(file_path, temp_file_path)
+                
+                cmd = [
+                    marker_cmd,
+                    temp_input_dir,
+                    "--output_dir", output_dir,
+                    "--use_llm",
+                    "--disable_image_extraction",
+                    "--workers", str(Config.NUM_WORKERS),
+                    "--layout_batch_size", str(Config.PAGE_BATCH_SIZE),
+                    "--table_rec_batch_size", str(Config.PAGE_BATCH_SIZE)
+                ]
+            else:
+                # For marker_single, process file directly
+                cmd = [
+                    marker_cmd,
+                    file_path,
+                    "--output_dir", output_dir,
+                    "--use_llm",
+                    "--disable_image_extraction"
+                ]
             
             logger.info(f"Running local Marker: {' '.join(cmd)}")
             
@@ -339,14 +381,27 @@ class DocumentProcessor:
                 return None
             
             # Find the generated markdown file
-            # Marker creates: filename/filename.md in the output directory
             base_name = Path(file_path).stem
-            markdown_file = os.path.join(output_dir, base_name, f"{base_name}.md")
             
-            logger.info(f"Looking for markdown file at: {markdown_file}")
+            # Try different possible locations for the markdown file
+            possible_locations = [
+                # marker_single pattern: filename/filename.md
+                os.path.join(output_dir, base_name, f"{base_name}.md"),
+                # marker directory pattern: output_dir/filename.md  
+                os.path.join(output_dir, f"{base_name}.md"),
+                # nested pattern: output_dir/input/filename/filename.md
+                os.path.join(output_dir, "input", base_name, f"{base_name}.md")
+            ]
             
-            if not os.path.exists(markdown_file):
-                logger.warning(f"Expected markdown file not found at: {markdown_file}")
+            markdown_file = None
+            for location in possible_locations:
+                if os.path.exists(location):
+                    markdown_file = location
+                    logger.info(f"Found markdown file at: {markdown_file}")
+                    break
+            
+            if markdown_file is None:
+                logger.warning(f"Expected markdown file not found in standard locations")
                 # Try to find any .md file recursively in the output directory
                 md_files = list(Path(output_dir).glob("**/*.md"))
                 if md_files:
