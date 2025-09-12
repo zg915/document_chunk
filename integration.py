@@ -14,10 +14,8 @@ import os
 import subprocess
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-from functools import lru_cache
 
 # GPU optimizations - set before importing torch-based libraries
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -55,7 +53,7 @@ load_dotenv('.env')
 # Configuration
 class Config:
     """Configuration settings for the document processor."""
-    API_KEY = os.getenv("MARKER_API_KEY", "ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI")
+    API_KEY = os.getenv("MARKER_API_KEY")
     API_URL = os.getenv("MARKER_API_URL", "https://www.datalab.to/api/v1/marker")
     
     MARKER_PARAMS = {
