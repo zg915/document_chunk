@@ -50,13 +50,6 @@ from langchain_community.document_loaders import (
     PyMuPDFLoader
 )
 
-# Optional imports
-try:
-    import pytesseract
-    HAS_OCR = True
-except ImportError:
-    HAS_OCR = False
-
 # Configuration
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -68,8 +61,8 @@ load_dotenv('.env')
 # Configuration
 class Config:
     """Configuration settings for the document processor."""
-    API_KEY = os.getenv("MARKER_API_KEY", "ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI")
-    API_URL = os.getenv("MARKER_API_URL", "https://www.datalab.to/api/v1/marker")
+    API_KEY = os.getenv("MARKER_API_KEY")
+    API_URL = os.getenv("MARKER_API_URL")
     
     MARKER_PARAMS = {
         'output_format': 'markdown',
@@ -78,7 +71,9 @@ class Config:
     }
     
     SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp']
-    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS
+    SUPPORTED_WORD_FORMATS = ['.docx', '.doc']
+    SUPPORTED_EXCEL_FORMATS = ['.xlsx', '.xls']
+    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS
     
     # Chunking parameters
     MAX_CHUNK_SIZE = 2500
@@ -157,6 +152,18 @@ class DocumentProcessor:
                 mime_type = 'application/pdf'
                 process_path = self._convert_image_to_pdf(file_path)
                 temp_file_created = True
+            elif file_ext in Config.SUPPORTED_WORD_FORMATS:
+                if file_ext == '.docx':
+                    mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                else:  # .doc
+                    mime_type = 'application/msword'
+                process_path = file_path
+            elif file_ext in Config.SUPPORTED_EXCEL_FORMATS:
+                if file_ext == '.xlsx':
+                    mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                else:  # .xls
+                    mime_type = 'application/vnd.ms-excel'
+                process_path = file_path
             else:
                 logger.error(f"Unsupported file format: {file_ext}")
                 return None
@@ -437,21 +444,16 @@ class FastFileExtractor:
         '.epub': 'epub', '.odt': 'odt', '.rtf': 'rtf', '.txt': 'text'
     }
     
-    def __init__(self, use_fast_mode: bool = True, max_pages: Optional[int] = None, 
-                 include_metadata: bool = True, ocr_images: bool = False):
+    def __init__(self, use_fast_mode: bool = True, include_metadata: bool = True):
         """
         Initialize the FastFileExtractor.
         
         Args:
             use_fast_mode: Whether to use fast extraction mode (PyMuPDF for PDFs)
-            max_pages: Maximum number of pages to process (for PDFs)
             include_metadata: Whether to include metadata in results
-            ocr_images: Whether to enable OCR for image files (requires pytesseract)
         """
         self.use_fast_mode = use_fast_mode
-        self.max_pages = max_pages
         self.include_metadata = include_metadata
-        self.ocr_images = ocr_images and HAS_OCR
     
     def extract(self, file_path: str) -> Dict[str, any]:
         """
@@ -527,9 +529,6 @@ class FastFileExtractor:
             try:
                 loader = PyMuPDFLoader(file_path)
                 docs = loader.load()
-                
-                if self.max_pages:
-                    docs = docs[:self.max_pages]
                 
                 markdown = ""
                 for i, doc in enumerate(docs):
@@ -677,7 +676,6 @@ def fast_convert_to_markdown(
     save_to_file: Optional[bool] = False,
     output_path: Optional[str] = None,
     quality: Optional[str] = "fast",
-    max_pages: Optional[int] = None,
     include_metadata: Optional[bool] = True
 ) -> Optional[str]:
     """
@@ -687,8 +685,7 @@ def fast_convert_to_markdown(
         file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
         save_to_file: Whether to save the markdown to a file
         output_path: Optional custom output path (defaults to input_name.md)
-        quality: Conversion quality mode - "fast" or "balanced"
-        max_pages: Maximum number of pages to process (for PDFs)
+        quality: Conversion quality mode - "fast" or "bnced"
         include_metadata: Whether to include processing metadata in output
         
     Returns:
@@ -712,14 +709,11 @@ def fast_convert_to_markdown(
     
     # Configure fast extractor based on quality setting
     use_fast_mode = quality == "fast"
-    ocr_images = quality == "balanced"  # Enable OCR for better quality
-    
+
     # Initialize fast extractor
     extractor = FastFileExtractor(
         use_fast_mode=use_fast_mode,
-        max_pages=max_pages,
-        include_metadata=include_metadata,
-        ocr_images=ocr_images
+        include_metadata=include_metadata
     )
     
     logger.info(f"Fast processing file: {file_path} (quality: {quality})")
@@ -771,8 +765,6 @@ def fast_convert_to_markdown(
 
 def chunk_markdown(
     markdown_input: Union[str, Path],
-    save_to_file: Optional[bool] = False,
-    output_path: Optional[str] = None,
 ) -> List[Dict]:
     """
     Chunk markdown content into smaller pieces for vector storage.
@@ -885,10 +877,6 @@ def chunk_markdown(
         final_chunks.append(chunk_data)
     
     logger.info(f"Created {len(final_chunks)} chunks from markdown content")
-    
-    # Save to file if requested
-    if save_to_file and output_path:
-        _save_chunks_to_file(final_chunks, output_path)
     
     return final_chunks
 
@@ -1218,10 +1206,12 @@ def process_document_to_weaviate(
             chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
         
         chunks = chunk_markdown(
-            markdown_input=markdown_content,
-            save_to_file=save_chunks_json,
-            output_path=chunks_json_path
+            markdown_input=markdown_content
         )
+        
+        # Save chunks to file if requested
+        if save_chunks_json and chunks_json_path:
+            _save_chunks_to_file(chunks, chunks_json_path)
         
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
@@ -1271,3 +1261,137 @@ def process_document_to_weaviate(
                 logger.info("Closed Weaviate connection")
             except Exception as e:
                 logger.warning(f"Error closing Weaviate connection: {e}")
+
+
+def fast_doc_to_weaviate(
+    file_path: str,
+    document_id: str,
+    tenant_id: str,
+    client: Optional[object] = None,
+    save_markdown: bool = False,
+    save_chunks_json: bool = False,
+    output_dir: Optional[str] = None,
+    quality: Optional[str] = "fast",
+    include_metadata: Optional[bool] = True
+) -> Dict[str, Union[str, int, List[Dict]]]:
+    """
+    Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
+    
+    This function:
+    1. Converts the document to markdown using fast_convert_to_markdown
+    2. Chunks the markdown content
+    3. Saves document metadata to Weaviate
+    4. Saves chunks to Weaviate with references
+    
+    Args:
+        file_path: Path to the input document (PDF or image)
+        document_id: Unique identifier for the document
+        tenant_id: Tenant ID for multi-tenancy
+        client: Weaviate client instance (optional, will create if not provided)
+        save_markdown: Whether to save markdown to file (optional)
+        save_chunks_json: Whether to save chunks to JSON file (optional)
+        output_dir: Directory for output files if saving (optional)
+        quality: Conversion quality mode - "fast" or "balanced"
+        include_metadata: Whether to include processing metadata in output
+        
+    Returns:
+        Dictionary containing:
+        - document_id: The document UUID used
+        - file_name: Original file name
+        - total_chunks: Number of chunks created
+        - chunks: List of chunk dictionaries (if needed for further processing)
+        
+    Raises:
+        FileNotFoundError: If the input file doesn't exist
+        ValueError: If conversion or chunking fails
+        Exception: If Weaviate operations fail
+    """
+    # Create client if not provided
+    client_created = False
+    if client is None:
+        client = _get_weaviate_client()
+        client_created = True
+    
+    try:
+        # Step 1: Convert document to markdown using fast conversion
+        logger.info(f"Fast processing document: {file_path}")
+        
+        markdown_path = None
+        if save_markdown and output_dir:
+            markdown_path = os.path.join(output_dir, f"{Path(file_path).stem}.md")
+        
+        markdown_content = fast_convert_to_markdown(
+            file_path=file_path,
+            save_to_file=save_markdown,
+            output_path=markdown_path,
+            quality=quality,
+            include_metadata=include_metadata
+        )
+        
+        if not markdown_content:
+            raise ValueError(f"Failed to convert document to markdown: {file_path}")
+        
+        # Step 2: Chunk the markdown content
+        chunks_json_path = None
+        if save_chunks_json and output_dir:
+            chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
+        
+        chunks = chunk_markdown(
+            markdown_input=markdown_content
+        )
+        
+        # Save chunks to file if requested
+        if save_chunks_json and chunks_json_path:
+            _save_chunks_to_file(chunks, chunks_json_path)
+        
+        if not chunks:
+            raise ValueError(f"No chunks created from document: {file_path}")
+        
+        # Step 3: Save document metadata to Weaviate
+        saved_doc_id = save_document_to_weaviate(
+            client=client,
+            file_path=file_path,
+            chunks=chunks,
+            document_id=document_id,
+            tenant_id=tenant_id
+        )
+        
+        # Step 4: Save chunks to Weaviate
+        save_chunks_to_weaviate(
+            client=client,
+            chunks=chunks,
+            document_id=saved_doc_id,
+            tenant_id=tenant_id
+        )
+        
+        # Return summary information
+        result = {
+            "document_id": saved_doc_id,
+            "file_name": Path(file_path).name,
+            "total_chunks": len(chunks),
+            "chunks": chunks  # Include chunks in case caller needs them
+        }
+        
+        logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks")
+        return result
+        
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        raise
+    except ValueError as e:
+        logger.error(f"Processing error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error processing document: {e}")
+        raise
+    finally:
+        # Close client if we created it
+        if client_created:
+            try:
+                client.close()
+                logger.info("Closed Weaviate connection")
+            except Exception as e:
+                logger.warning(f"Error closing Weaviate connection: {e}")
+    
+
+    
