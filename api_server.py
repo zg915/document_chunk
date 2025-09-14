@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
+import time
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +24,15 @@ from pydantic import BaseModel
 import uvicorn
 
 # Import our document processing functions
+# Add one more import 
 from integration import (
     convert_to_markdown,
     process_document_to_weaviate,
     delete_document_from_weaviate,
     _get_weaviate_client,
-    chunk_markdown
+    chunk_markdown,
+    fast_convert_to_markdown,
+    fast_doc_to_weaviate
 )
 
 # Configure logging
@@ -51,6 +55,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Response models
 class ConvertToMarkdownResponse(BaseModel):
     success: bool
@@ -64,6 +69,7 @@ class ProcessDocumentResponse(BaseModel):
     document_id: Optional[str] = None
     file_name: Optional[str] = None
     total_chunks: Optional[int] = None
+    processing_time: Optional[float] = None
     message: str
     error: Optional[str] = None
 
@@ -86,8 +92,17 @@ class HealthResponse(BaseModel):
     version: str
     weaviate_connected: bool
 
-# Supported file formats
-SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp']
+#create new response model
+class FastConvertToMarkdownResponse(BaseModel):
+    success:bool
+    markdown_content:Optional[str]=None
+    file_path: Optional[str]=None
+    processing_time: Optional[float] = None
+    message: str
+    error: Optional[str] = None
+
+# Supported file formats for convert-doc-to-markdown (PDF and images only)
+SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp', '.docx', '.doc', '.xlsx', '.xls']
 
 def validate_file_format(filename: str, supported_formats: List[str]) -> None:
     """Validate uploaded file format."""
@@ -136,8 +151,6 @@ async def health_check():
 @app.post("/convert-doc-to-markdown", response_model=ConvertToMarkdownResponse)
 async def convert_doc_to_markdown(
     file: UploadFile = File(...),
-    save_to_file: bool = Query(False),
-    output_path: Optional[str] = Query(None),
     use_local: bool = Query(True)
 ):
     """Convert an uploaded PDF or image file to markdown format."""
@@ -148,22 +161,15 @@ async def convert_doc_to_markdown(
         
         markdown_content = convert_to_markdown(
             file_path=temp_file_path,
-            save_to_file=save_to_file,
-            output_path=output_path,
             use_local=use_local
         )
         
         if not markdown_content:
             raise ValueError("Conversion failed")
         
-        output_file_path = output_path if save_to_file else None
-        if save_to_file and not output_path:
-            output_file_path = f"{Path(file.filename).stem}.md"
-        
         return ConvertToMarkdownResponse(
             success=True,
             markdown_content=markdown_content,
-            file_path=output_file_path,
             message="Document converted successfully"
         )
         
@@ -176,6 +182,55 @@ async def convert_doc_to_markdown(
         )
     finally:
         cleanup_temp_file(temp_file_path)
+
+# fast convert files into markdown 
+@app.post("/fast-convert-to-markdown", response_model=ConvertToMarkdownResponse)
+async def fast_convert_to_mark_down(
+    file: UploadFile = File(...)
+):
+    temp_file_path = None
+    start_time = time.time()
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+        
+        # Convert to markdown
+        markdown_content = fast_convert_to_markdown(
+            file_path=temp_file_path
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if markdown_content is None:
+            return ConvertToMarkdownResponse(
+                success=False,
+                processing_time=processing_time,
+                message="Conversion failed"
+            )
+        
+        return ConvertToMarkdownResponse(
+            success=True,
+            markdown_content=markdown_content,
+            processing_time=processing_time,
+            content_length=len(markdown_content),
+            message="Conversion successful"
+        )
+        
+    except Exception as e:
+        return ConvertToMarkdownResponse(
+            success=False,
+            processing_time=time.time() - start_time,
+            message="Conversion failed",
+            error=str(e)
+        )
+    
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
 
 # Process document and save to Weaviate
 @app.post("/process-doc-to-weaviate", response_model=ProcessDocumentResponse)
@@ -218,23 +273,95 @@ async def upload_and_process_document(
     finally:
         cleanup_temp_file(temp_file_path)
 
-# Chunk markdown file
-@app.post("/chunk-markdown", response_model=ChunkMarkdownResponse)
-async def chunk_markdown_file(
+
+# Fast process document and save to Weaviate
+@app.post("/fast-doc-to-weaviate", response_model=ProcessDocumentResponse)
+async def upload_and_fast_process_document(
     file: UploadFile = File(...),
-    save_chunks_json: bool = Query(False),
-    output_path: Optional[str] = Query(None)
+    tenant_id: str = Query(...),
+    document_id: Optional[str] = Query(None)
 ):
-    """Upload a markdown file and return its chunks."""
+    """Upload and fast process document to Weaviate with configurable quality settings."""
     temp_file_path = None
     try:
-        validate_file_format(file.filename, ['.md'])
+        validate_file_format(file.filename, SUPPORTED_FORMATS)
         temp_file_path = await save_uploaded_file(file)
         
+        doc_id = document_id or str(uuid.uuid4())
+        
+        result = fast_doc_to_weaviate(
+            file_path=temp_file_path,
+            document_id=doc_id,
+            tenant_id=tenant_id
+        )
+        
+        return ProcessDocumentResponse(
+            success=True,
+            document_id=result["document_id"],
+            file_name=result["file_name"],
+            total_chunks=result["total_chunks"],
+            message=f"Document fast processed with {result['total_chunks']} chunks)"
+        )
+        
+    except Exception as e:
+        logger.error(f"Fast processing error: {e}")
+        return ProcessDocumentResponse(
+            success=False,
+            message="Failed to fast process document",
+            error=str(e)
+        )
+    finally:
+        cleanup_temp_file(temp_file_path)
+
+
+# Chunk markdown from text content
+@app.post("/chunk-markdown-text", response_model=ChunkMarkdownResponse)
+async def chunk_markdown_text(
+    markdown_content: str
+):
+    """Chunk markdown text content directly."""
+    temp_file_path = None
+    try:
+        # Save text content to temporary file since chunk_markdown requires a file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            f.write(markdown_content)
+            temp_file_path = f.name
+        
         chunks = chunk_markdown(
-            markdown_input=Path(temp_file_path),
-            save_to_file=save_chunks_json,
-            output_path=output_path
+            markdown_input=Path(temp_file_path)
+        )
+        
+        return ChunkMarkdownResponse(
+            success=True,
+            chunks=chunks,
+            total_chunks=len(chunks),
+            message=f"Markdown chunked into {len(chunks)} chunks"
+        )
+        
+    except Exception as e:
+        logger.error(f"Chunking error: {e}")
+        return ChunkMarkdownResponse(
+            success=False,
+            message="Failed to chunk markdown",
+            error=str(e)
+        )
+    finally:
+        cleanup_temp_file(temp_file_path)
+
+# Chunk markdown file (requires file upload)
+@app.post("/chunk-markdown", response_model=ChunkMarkdownResponse)
+async def chunk_markdown_file(
+    file: UploadFile = File(...)
+):
+    """Upload a markdown file and return chunks."""
+    temp_file_path = None
+    try:
+        # Handle file upload - now required
+        validate_file_format(file.filename, ['.md'])
+        temp_file_path = await save_uploaded_file(file)
+        chunks = chunk_markdown(
+            markdown_input=Path(temp_file_path)
         )
         
         return ChunkMarkdownResponse(

@@ -7,7 +7,7 @@ python-multipart==0.0.6
 requests==2.31.0
 tiktoken==0.5.1
 python-dotenv==1.0.0
-Pillow==10.1.0
+Pillow>=11.1.0
 
 # Unstructured document processing
 unstructured[pdf]==0.10.30
@@ -16,10 +16,36 @@ unstructured[image]==0.10.30
 # Weaviate vector database
 weaviate-client==4.16.9
 
-# Marker for document processing (API only - local requires separate installation)
-# Note: For local marker, install marker-pdf separately: pip install marker-pdf
+# LangChain document loaders
+langchain-community>=0.0.25
+
+# PyMuPDF for fast PDF processing
+PyMuPDF>=1.23.0
+
+# OCR support (optional)
+pytesseract>=0.3.10
 
 # Additional utilities
 pydantic>=2.8.0
 pathlib2==2.3.7
 markdown==3.5.1
+
+# Marker for document processing (install separately due to Pillow conflicts)
+# marker-pdf
+
+# Additional packages for fast conversion and processing
+pi-heif
+pdf2image
+python-docx
+unstructured-inference==0.7.11
+
+# Image processing (for HEIF support)
+pillow-heif
+
+# Microsoft Office document processing
+openpyxl
+xlrd
+msoffcrypto-tool
+
+# Additional document formats
+ebooklib

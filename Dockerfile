@@ -20,6 +20,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl ca-certificates \
     libmagic1 poppler-utils \
+    libreoffice-writer libreoffice-calc \
  && rm -rf /var/lib/apt/lists/*
 
 # ---------- Python deps ----------

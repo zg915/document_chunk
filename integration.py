@@ -6,7 +6,8 @@ This module provides functions to:
 2. Chunk markdown content into smaller, manageable pieces for vector storage
 3. Save documents and chunks to Weaviate vector database
 """
-
+#!/usr/bin/env python3
+# Standard library imports
 import json
 import logging
 import mimetypes
@@ -15,33 +16,53 @@ import subprocess
 import tempfile
 import time
 import uuid
+import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
+# Third-party imports
 import requests
 import tiktoken
+import weaviate
 from dotenv import load_dotenv
 from PIL import Image
-from unstructured.partition.md import partition_md
-from unstructured.chunking.title import chunk_by_title
-from unstructured.chunking.basic import chunk_elements
-from weaviate.util import generate_uuid5
 from weaviate import WeaviateClient
 from weaviate.auth import AuthApiKey
 from weaviate.connect import ConnectionParams, ProtocolParams
+from weaviate.util import generate_uuid5
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Unstructured imports
+from unstructured.chunking.basic import chunk_elements
+from unstructured.chunking.title import chunk_by_title
+from unstructured.partition.md import partition_md
+
+# LangChain imports
+from langchain_community.document_loaders import (
+    UnstructuredPDFLoader,
+    UnstructuredWordDocumentLoader,
+    UnstructuredExcelLoader,
+    UnstructuredPowerPointLoader,
+    UnstructuredHTMLLoader,
+    UnstructuredCSVLoader,
+    UnstructuredEPubLoader,
+    UnstructuredODTLoader,
+    UnstructuredRTFLoader,
+    PyMuPDFLoader
+)
+
+# Configuration
+warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv('.env')
 
+
 # Configuration
 class Config:
     """Configuration settings for the document processor."""
-    API_KEY = os.getenv("MARKER_API_KEY", "ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI")
-    API_URL = os.getenv("MARKER_API_URL", "https://www.datalab.to/api/v1/marker")
+    API_KEY = os.getenv("MARKER_API_KEY")
+    API_URL = os.getenv("MARKER_API_URL")
     
     MARKER_PARAMS = {
         'output_format': 'markdown',
@@ -50,7 +71,9 @@ class Config:
     }
     
     SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp']
-    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS
+    SUPPORTED_WORD_FORMATS = ['.docx', '.doc']
+    SUPPORTED_EXCEL_FORMATS = ['.xlsx', '.xls']
+    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS
     
     # Chunking parameters
     MAX_CHUNK_SIZE = 2500
@@ -129,6 +152,18 @@ class DocumentProcessor:
                 mime_type = 'application/pdf'
                 process_path = self._convert_image_to_pdf(file_path)
                 temp_file_created = True
+            elif file_ext in Config.SUPPORTED_WORD_FORMATS:
+                if file_ext == '.docx':
+                    mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                else:  # .doc
+                    mime_type = 'application/msword'
+                process_path = file_path
+            elif file_ext in Config.SUPPORTED_EXCEL_FORMATS:
+                if file_ext == '.xlsx':
+                    mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                else:  # .xls
+                    mime_type = 'application/vnd.ms-excel'
+                process_path = file_path
             else:
                 logger.error(f"Unsupported file format: {file_ext}")
                 return None
@@ -391,10 +426,345 @@ def convert_to_markdown(
     return markdown_content
 
 
-def chunk_markdown(
-    markdown_input: Union[str, Path],
+# new class and functions for fast conversion 
+#create another class called Fast_DocumentProcessor
+class FastFileExtractor:
+    """
+    Fast file extraction class for converting various document types to markdown.
+    
+    Supports PDFs, Word documents, Excel files, PowerPoint presentations, 
+    HTML files, CSV files, and other document formats.
+    """
+    
+    FILE_LOADERS = {
+        '.pdf': 'pdf', '.doc': 'word', '.docx': 'word', '.xls': 'excel', '.xlsx': 'excel',
+        '.ppt': 'powerpoint', '.pptx': 'powerpoint', '.jpg': 'image', '.jpeg': 'image',
+        '.png': 'image', '.gif': 'image', '.bmp': 'image', '.tiff': 'image',
+        '.html': 'html', '.htm': 'html', '.md': 'markdown', '.csv': 'csv',
+        '.epub': 'epub', '.odt': 'odt', '.rtf': 'rtf', '.txt': 'text'
+    }
+    
+    def __init__(self, use_fast_mode: bool = True, include_metadata: bool = True):
+        """
+        Initialize the FastFileExtractor.
+        
+        Args:
+            use_fast_mode: Whether to use fast extraction mode (PyMuPDF for PDFs)
+            include_metadata: Whether to include metadata in results
+        """
+        self.use_fast_mode = use_fast_mode
+        self.include_metadata = include_metadata
+    
+    def extract(self, file_path: str) -> Dict[str, any]:
+        """
+        Extract content from a file and convert to markdown.
+        
+        Args:
+            file_path: Path to the file to extract
+            
+        Returns:
+            Dictionary containing:
+            - markdown: Extracted content as markdown string
+            - metadata: File metadata and extraction info
+            - processing_time: Time taken for extraction
+            - success: Boolean indicating if extraction was successful
+            - error: Error message if extraction failed
+        """
+        start_time = time.time()
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        file_ext = Path(file_path).suffix.lower()
+        file_type = self.FILE_LOADERS.get(file_ext, 'unknown')
+        
+        if file_type == 'unknown':
+            raise ValueError(f"Unsupported file type: {file_ext}")
+        
+        try:
+            if file_type == 'pdf':
+                markdown, metadata = self._extract_pdf(file_path)
+            elif file_type == 'word':
+                markdown, metadata = self._extract_word(file_path)
+            elif file_type == 'excel':
+                markdown, metadata = self._extract_excel(file_path)
+            elif file_type == 'powerpoint':
+                markdown, metadata = self._extract_powerpoint(file_path)
+            elif file_type == 'image':
+                raise ValueError("Image files not supported. Convert to PDF first.")
+            elif file_type in ['html', 'csv', 'markdown', 'text']:
+                markdown, metadata = self._extract_simple(file_path, file_type)
+            else:
+                markdown, metadata = self._extract_unstructured(file_path, file_type)
+            
+            processing_time = time.time() - start_time
+            
+            if self.include_metadata:
+                metadata.update({
+                    'processing_time': f"{processing_time:.2f}s",
+                    'file_path': file_path,
+                    'file_type': file_type,
+                    'file_size': f"{os.path.getsize(file_path) / 1024:.1f} KB"
+                })
+            
+            return {
+                'markdown': markdown,
+                'metadata': metadata,
+                'processing_time': processing_time,
+                'success': True
+            }
+            
+        except Exception as e:
+            return {
+                'markdown': '',
+                'metadata': {'error': str(e)},
+                'processing_time': time.time() - start_time,
+                'success': False,
+                'error': str(e)
+            }
+    
+    def _extract_pdf(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from PDF file."""
+        if self.use_fast_mode:
+            try:
+                loader = PyMuPDFLoader(file_path)
+                docs = loader.load()
+                
+                markdown = ""
+                for i, doc in enumerate(docs):
+                    markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
+                
+                return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
+            except Exception:
+                pass
+        
+        loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
+        docs = loader.load()
+        markdown = self._format_documents(docs)
+        return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+    
+    def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from Word document."""
+        loader = UnstructuredWordDocumentLoader(file_path, mode="single")
+        docs = loader.load()
+        return self._format_documents(docs), {'total_elements': len(docs)}
+    
+    def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from Excel file."""
+        loader = UnstructuredExcelLoader(file_path, mode="single")
+        docs = loader.load()
+        
+        markdown = "# Excel Document\n\n"
+        for doc in docs:
+            content = doc.page_content
+            if '\t' in content:
+                markdown += self._format_table(content)
+            else:
+                markdown += content + "\n\n"
+        
+        return markdown, {'total_sheets': len(docs)}
+    
+    def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
+        """Extract content from PowerPoint presentation."""
+        loader = UnstructuredPowerPointLoader(file_path, mode="single")
+        docs = loader.load()
+        
+        markdown = "# PowerPoint Presentation\n\n"
+        for doc in docs:
+            markdown += doc.page_content + "\n\n"
+        
+        return markdown, {'total_slides': len(docs)}
+    
+    def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
+        """Extract content from simple file types (text, markdown, HTML, CSV)."""
+        if file_type == 'markdown':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read(), {'loader': 'Direct'}
+        
+        elif file_type == 'text':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            return f"# Text Document\n\n{content}", {'loader': 'Direct'}
+        
+        elif file_type == 'html':
+            loader = UnstructuredHTMLLoader(file_path, mode="single")
+            docs = loader.load()
+            return self._format_documents(docs), {'loader': 'HTML'}
+        
+        elif file_type == 'csv':
+            loader = UnstructuredCSVLoader(file_path, mode="single")
+            docs = loader.load()
+            markdown = "# CSV Data\n\n"
+            for doc in docs:
+                markdown += self._format_table(doc.page_content)
+            return markdown, {'loader': 'CSV'}
+    
+    def _extract_unstructured(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
+        """Extract content using unstructured loaders for specialized formats."""
+        loaders = {
+            'epub': UnstructuredEPubLoader,
+            'odt': UnstructuredODTLoader,
+            'rtf': UnstructuredRTFLoader
+        }
+        
+        loader_class = loaders.get(file_type)
+        if not loader_class:
+            raise ValueError(f"No loader available for {file_type}")
+        
+        loader = loader_class(file_path, mode="single")
+        docs = loader.load()
+        return self._format_documents(docs), {'loader': file_type.upper()}
+    
+    def _format_documents(self, docs: List) -> str:
+        """Format document list into markdown string."""
+        return "\n\n".join(doc.page_content for doc in docs) + "\n"
+    
+    def _format_table(self, content: str) -> str:
+        """Format tabular content as markdown table."""
+        lines = content.strip().split('\n')
+        if not lines:
+            return content
+        
+        markdown = "\n"
+        for i, line in enumerate(lines):
+            if '\t' in line:
+                cells = line.split('\t')
+                markdown += '| ' + ' | '.join(cells) + ' |\n'
+                if i == 0:
+                    markdown += '|' + '---|' * len(cells) + '\n'
+            else:
+                markdown += line + '\n'
+        
+        return markdown + "\n"
+    
+    def extract_batch(self, file_paths: List[str]) -> List[Dict]:
+        """
+        Extract content from multiple files in batch.
+        
+        Args:
+            file_paths: List of file paths to extract
+            
+        Returns:
+            List of extraction results for each file
+        """
+        results = []
+        logger.info(f"Starting batch extraction of {len(file_paths)} files")
+        
+        for i, file_path in enumerate(file_paths):
+            try:
+                logger.info(f"Processing file {i+1}/{len(file_paths)}: {Path(file_path).name}")
+                result = self.extract(file_path)
+                results.append(result)
+                
+            except Exception as e:
+                error_result = {
+                    'markdown': '',
+                    'metadata': {'error': str(e), 'file_path': file_path},
+                    'processing_time': 0,
+                    'success': False,
+                    'error': str(e)
+                }
+                results.append(error_result)
+                logger.error(f"Failed to extract {file_path}: {e}")
+        
+        successful = sum(1 for r in results if r['success'])
+        logger.info(f"Batch extraction completed: {successful}/{len(file_paths)} files successful")
+        return results
+
+def fast_convert_to_markdown(
+    file_path: str,
     save_to_file: Optional[bool] = False,
     output_path: Optional[str] = None,
+    quality: Optional[str] = "fast",
+    include_metadata: Optional[bool] = True
+) -> Optional[str]:
+    """
+    Fast convert a document file to markdown format using FastFileExtractor.
+    
+    Args:
+        file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
+        save_to_file: Whether to save the markdown to a file
+        output_path: Optional custom output path (defaults to input_name.md)
+        quality: Conversion quality mode - "fast" or "bnced"
+        include_metadata: Whether to include processing metadata in output
+        
+    Returns:
+        Markdown content as string, or None if conversion failed
+        
+    Raises:
+        FileNotFoundError: If the input file doesn't exist
+        ValueError: If the file format is not supported
+    """
+    # Validate input
+    file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
+    file_path = os.path.abspath(file_path)
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    file_ext = os.path.splitext(file_path)[1].lower()
+    if file_ext not in FastFileExtractor.FILE_LOADERS:
+        supported_formats = list(FastFileExtractor.FILE_LOADERS.keys())
+        raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {supported_formats}")
+    
+    # Configure fast extractor based on quality setting
+    use_fast_mode = quality == "fast"
+
+    # Initialize fast extractor
+    extractor = FastFileExtractor(
+        use_fast_mode=use_fast_mode,
+        include_metadata=include_metadata
+    )
+    
+    logger.info(f"Fast processing file: {file_path} (quality: {quality})")
+    
+    # Extract content
+    try:
+        result = extractor.extract(file_path)
+        
+        if not result['success']:
+            logger.error(f"Fast conversion failed: {result.get('error', 'Unknown error')}")
+            return None
+        
+        markdown_content = result['markdown']
+        processing_time = result['processing_time']
+        
+        if not markdown_content:
+            logger.error("Fast conversion returned empty content")
+            return None
+        
+        logger.info(f"Fast conversion completed in {processing_time:.2f}s")
+        
+        # Optionally append metadata to markdown
+        if include_metadata and result.get('metadata'):
+            metadata = result['metadata']
+            markdown_content += "\n\n---\n\n"
+            markdown_content += "## Processing Metadata\n\n"
+            for key, value in metadata.items():
+                markdown_content += f"- **{key.replace('_', ' ').title()}**: {value}\n"
+        
+    except Exception as e:
+        logger.error(f"Fast conversion error: {e}")
+        return None
+    
+    # Save to file if requested
+    if save_to_file:
+        if output_path is None:
+            output_path = Path(file_path).with_suffix('.md')
+        else:
+            output_path = Path(output_path)
+        
+        try:
+            output_path.write_text(markdown_content, encoding='utf-8')
+            logger.info(f"Fast converted markdown saved to: {output_path}")
+        except Exception as e:
+            logger.error(f"Failed to save markdown file: {e}")
+            return None
+    
+    return markdown_content
+
+def chunk_markdown(
+    markdown_input: Union[str, Path],
 ) -> List[Dict]:
     """
     Chunk markdown content into smaller pieces for vector storage.
@@ -507,10 +877,6 @@ def chunk_markdown(
         final_chunks.append(chunk_data)
     
     logger.info(f"Created {len(final_chunks)} chunks from markdown content")
-    
-    # Save to file if requested
-    if save_to_file and output_path:
-        _save_chunks_to_file(final_chunks, output_path)
     
     return final_chunks
 
@@ -840,10 +1206,12 @@ def process_document_to_weaviate(
             chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
         
         chunks = chunk_markdown(
-            markdown_input=markdown_content,
-            save_to_file=save_chunks_json,
-            output_path=chunks_json_path
+            markdown_input=markdown_content
         )
+        
+        # Save chunks to file if requested
+        if save_chunks_json and chunks_json_path:
+            _save_chunks_to_file(chunks, chunks_json_path)
         
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
@@ -893,3 +1261,137 @@ def process_document_to_weaviate(
                 logger.info("Closed Weaviate connection")
             except Exception as e:
                 logger.warning(f"Error closing Weaviate connection: {e}")
+
+
+def fast_doc_to_weaviate(
+    file_path: str,
+    document_id: str,
+    tenant_id: str,
+    client: Optional[object] = None,
+    save_markdown: bool = False,
+    save_chunks_json: bool = False,
+    output_dir: Optional[str] = None,
+    quality: Optional[str] = "fast",
+    include_metadata: Optional[bool] = True
+) -> Dict[str, Union[str, int, List[Dict]]]:
+    """
+    Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
+    
+    This function:
+    1. Converts the document to markdown using fast_convert_to_markdown
+    2. Chunks the markdown content
+    3. Saves document metadata to Weaviate
+    4. Saves chunks to Weaviate with references
+    
+    Args:
+        file_path: Path to the input document (PDF or image)
+        document_id: Unique identifier for the document
+        tenant_id: Tenant ID for multi-tenancy
+        client: Weaviate client instance (optional, will create if not provided)
+        save_markdown: Whether to save markdown to file (optional)
+        save_chunks_json: Whether to save chunks to JSON file (optional)
+        output_dir: Directory for output files if saving (optional)
+        quality: Conversion quality mode - "fast" or "balanced"
+        include_metadata: Whether to include processing metadata in output
+        
+    Returns:
+        Dictionary containing:
+        - document_id: The document UUID used
+        - file_name: Original file name
+        - total_chunks: Number of chunks created
+        - chunks: List of chunk dictionaries (if needed for further processing)
+        
+    Raises:
+        FileNotFoundError: If the input file doesn't exist
+        ValueError: If conversion or chunking fails
+        Exception: If Weaviate operations fail
+    """
+    # Create client if not provided
+    client_created = False
+    if client is None:
+        client = _get_weaviate_client()
+        client_created = True
+    
+    try:
+        # Step 1: Convert document to markdown using fast conversion
+        logger.info(f"Fast processing document: {file_path}")
+        
+        markdown_path = None
+        if save_markdown and output_dir:
+            markdown_path = os.path.join(output_dir, f"{Path(file_path).stem}.md")
+        
+        markdown_content = fast_convert_to_markdown(
+            file_path=file_path,
+            save_to_file=save_markdown,
+            output_path=markdown_path,
+            quality=quality,
+            include_metadata=include_metadata
+        )
+        
+        if not markdown_content:
+            raise ValueError(f"Failed to convert document to markdown: {file_path}")
+        
+        # Step 2: Chunk the markdown content
+        chunks_json_path = None
+        if save_chunks_json and output_dir:
+            chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
+        
+        chunks = chunk_markdown(
+            markdown_input=markdown_content
+        )
+        
+        # Save chunks to file if requested
+        if save_chunks_json and chunks_json_path:
+            _save_chunks_to_file(chunks, chunks_json_path)
+        
+        if not chunks:
+            raise ValueError(f"No chunks created from document: {file_path}")
+        
+        # Step 3: Save document metadata to Weaviate
+        saved_doc_id = save_document_to_weaviate(
+            client=client,
+            file_path=file_path,
+            chunks=chunks,
+            document_id=document_id,
+            tenant_id=tenant_id
+        )
+        
+        # Step 4: Save chunks to Weaviate
+        save_chunks_to_weaviate(
+            client=client,
+            chunks=chunks,
+            document_id=saved_doc_id,
+            tenant_id=tenant_id
+        )
+        
+        # Return summary information
+        result = {
+            "document_id": saved_doc_id,
+            "file_name": Path(file_path).name,
+            "total_chunks": len(chunks),
+            "chunks": chunks  # Include chunks in case caller needs them
+        }
+        
+        logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks")
+        return result
+        
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        raise
+    except ValueError as e:
+        logger.error(f"Processing error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error processing document: {e}")
+        raise
+    finally:
+        # Close client if we created it
+        if client_created:
+            try:
+                client.close()
+                logger.info("Closed Weaviate connection")
+            except Exception as e:
+                logger.warning(f"Error closing Weaviate connection: {e}")
+    
+
+    
