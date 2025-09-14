@@ -1,7 +1,13 @@
 # Core API dependencies
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
+uvicorn[standard]>=0.30.0
 python-multipart==0.0.6
+
+# PyTorch and vision (GPU support)
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+transformers>=4.36.0
 
 # Document processing dependencies
 requests==2.31.0
@@ -9,9 +15,15 @@ tiktoken==0.5.1
 python-dotenv==1.0.0
 Pillow>=11.1.0
 
-# Unstructured document processing
-unstructured[pdf]==0.10.30
-unstructured[image]==0.10.30
+
+# Marker for GPU-accelerated PDF processing
+marker-pdf[gpu]==1.9.2
+
+# Unstructured document processing (with all features)
+unstructured[all-docs]>=0.15.7
+
+# NLP
+nltk>=3.9.0
 
 # Weaviate vector database
 weaviate-client==4.16.9

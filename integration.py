@@ -20,7 +20,23 @@ import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+
 # Third-party imports
+# GPU optimizations - set before importing torch-based libraries
+os.environ["OMP_NUM_THREADS"] = "1"
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.set_num_threads(1)
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print(f"GPU optimizations enabled: {torch.cuda.get_device_name(0)}")
+except Exception as e:
+    print(f"GPU optimizations failed, continuing without: {e}")
+    torch = None
+
+
 import requests
 import tiktoken
 import weaviate
@@ -63,6 +79,7 @@ class Config:
     """Configuration settings for the document processor."""
     API_KEY = os.getenv("MARKER_API_KEY")
     API_URL = os.getenv("MARKER_API_URL")
+
     
     MARKER_PARAMS = {
         'output_format': 'markdown',
@@ -85,9 +102,13 @@ class Config:
     MAX_RETRIES = 30
     RETRY_DELAY = 10
     
-    # Local Marker settings
-    LOCAL_MARKER_COMMAND = "marker_single"  # Will try full path if not found
+    # Local Marker settings - using marker instead of marker_single for batch processing
+    LOCAL_MARKER_COMMAND = "marker"  # Use marker for consistent batch processing
     LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
+    
+    # GPU optimization settings
+    NUM_WORKERS = int(os.getenv("MARKER_NUM_WORKERS", "4"))  # 4-7 range recommended
+    PAGE_BATCH_SIZE = int(os.getenv("MARKER_PAGE_BATCH", "6"))  # 4-8 range recommended
     
     # Weaviate settings
     WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
@@ -237,104 +258,83 @@ class DocumentProcessor:
             Markdown content or None if failed
         """
         try:
-            # Create unique output directory for this job
-            job_id = str(uuid.uuid4())[:8]
-            output_dir = os.path.join(Config.LOCAL_MARKER_OUTPUT_DIR, job_id)
-            os.makedirs(output_dir, exist_ok=True)
+            logger.info("Using marker Python API for GPU-optimized processing")
             
-            # Find marker_single command
-            marker_cmd = "marker_single"
-            possible_paths = [
-                "marker_single",
-                "/usr/local/bin/marker_single",
-                "/usr/bin/marker_single"
-            ]
+            # Import correct marker modules according to PyPI documentation
+            from marker.converters.pdf import PdfConverter
+            from marker.models import create_model_dict
+            from marker.output import text_from_rendered
             
-            for path in possible_paths:
-                try:
-                    result = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        marker_cmd = path
-                        break
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
+            # Use preloaded models if available
+            try:
+                from preload_models import get_preloaded_models
+                models = get_preloaded_models()
+                if models:
+                    logger.info(f"✅ Using {len(models)} preloaded models")
+                else:
+                    logger.info("Loading models...")
+                    models = create_model_dict()
+            except ImportError:
+                logger.info("Loading models...")
+                models = create_model_dict()
             
-            # Build the command with resource-friendly options
-            cmd = [
-                marker_cmd,
-                file_path,
-                "--use_llm",
-                "--disable_image_extraction",
-                "--equation_batch_size", "1",  # Reduce batch size to use less memory
-                "--layout_batch_size", "1",
-                "--table_rec_batch_size", "1",
-                "--output_dir", output_dir
-            ]
+            # Create optimized configuration for faster processing
+            from marker.config.parser import ConfigParser
             
-            logger.info(f"Running local Marker: {' '.join(cmd)}")
+            # Speed optimizations
+            config = {
+                # GPU optimization for Tesla T4 (16GB VRAM)
+                "batch_multiplier": 8,  # Increase to 8x for Tesla T4
+                "ocr_batch_size": 32,  # Larger OCR batch size
+                "layout_batch_size": 8,  # Larger layout batch
+                "table_rec_batch_size": 8,  # Larger table batch
+                
+                # OCR optimizations
+                "ocr_all_pages": False,  # Only OCR when needed
+                "disable_ocr": False,  # Keep OCR but optimize
+                "ocr_error_detection": False,  # Skip OCR error detection for speed
+                "detect_language": False,  # Skip language detection
+                
+                # Processing optimizations
+                "paginate_output": False,  # Faster without pagination
+                "disable_image_extraction": True,  # Skip images
+                "skip_table_detection": False,  # Keep tables but optimize
+                
+                # Parallel processing
+                "workers": 6,  # More parallel workers
+                "ray_workers": 6,  # Ray parallel processing
+                
+                # Other optimizations
+                "use_llm": True,  # No LLM for speed
+                "force_gpu": True,  # Force GPU usage
+                "langs": ["en"],  # Skip language detection
+            }
             
-            # Run the command with increased timeout and better memory handling
-            logger.info(f"Executing marker command...")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=1200,  # 20 minute timeout for larger documents
-                env={**os.environ, 'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512'}
+            config_parser = ConfigParser(config)
+            
+            # Create converter with GPU optimizations and config
+            converter = PdfConverter(
+                artifact_dict=models,
+                config=config_parser.generate_config_dict()
             )
             
-            logger.info(f"Marker command completed with return code: {result.returncode}")
+            # Convert PDF to markdown
+            logger.info(f"Converting {file_path} with GPU acceleration...")
+            logger.info(f"Settings: batch_multiplier=4, ocr_all_pages=False, workers=4")
+            start_time = time.perf_counter()
             
-            if result.returncode != 0:
-                if result.returncode == -9:
-                    logger.error(f"Marker process was killed (return code -9), likely due to memory constraints or timeout")
-                    logger.error(f"Consider: 1) Reducing document size, 2) Increasing Docker memory limit, 3) Using smaller batch size")
-                else:
-                    logger.error(f"Marker command failed with return code {result.returncode}")
-                
-                logger.error(f"STDERR output:\n{result.stderr if result.stderr else 'No stderr output'}")
-                logger.error(f"STDOUT output:\n{result.stdout if result.stdout else 'No stdout output'}")
-                logger.error(f"Command was: {' '.join(cmd)}")
-                logger.error(f"Working directory: {os.getcwd()}")
-                logger.error(f"File exists: {os.path.exists(file_path)}")
-                logger.error(f"Output dir exists: {os.path.exists(output_dir)}")
-                return None
+            # Run conversion
+            rendered = converter(file_path)
+            text, _, _ = text_from_rendered(rendered)
             
-            # Find the generated markdown file
-            # Marker creates: filename/filename.md in the output directory
-            base_name = Path(file_path).stem
-            markdown_file = os.path.join(output_dir, base_name, f"{base_name}.md")
+            processing_time = time.perf_counter() - start_time
+            logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
             
-            logger.info(f"Looking for markdown file at: {markdown_file}")
+            return text
             
-            if not os.path.exists(markdown_file):
-                logger.warning(f"Expected markdown file not found at: {markdown_file}")
-                # Try to find any .md file recursively in the output directory
-                md_files = list(Path(output_dir).glob("**/*.md"))
-                if md_files:
-                    markdown_file = str(md_files[0])
-                    logger.info(f"Found markdown file at: {markdown_file}")
-                else:
-                    logger.error(f"No markdown file found in {output_dir}")
-                    logger.error(f"Directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'Directory does not exist'}")
-                    return None
-            
-            # Read the markdown content
-            with open(markdown_file, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            
-            # Clean up the temporary output directory
-            try:
-                import shutil
-                shutil.rmtree(output_dir)
-            except Exception as e:
-                logger.warning(f"Could not clean up temp directory {output_dir}: {e}")
-            
-            logger.info(f"Successfully processed with local Marker")
-            return markdown_content
-            
-        except subprocess.TimeoutExpired:
-            logger.error("Local Marker processing timed out after 600 seconds (10 minutes)")
+        except ImportError as e:
+            logger.error(f"Marker Python API not available: {e}")
+            logger.error("Please ensure marker-pdf is installed: pip install marker-pdf[gpu]")
             return None
         except Exception as e:
             logger.error(f"Error processing with local Marker: {str(e)}")
