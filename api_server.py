@@ -110,6 +110,9 @@ class WebhookRequest(BaseModel):
     file_path: str
     webhook_url: str
     future: asyncio.Future
+    
+    class Config:
+        arbitrary_types_allowed = True
 
 #create new response model
 class FastConvertToMarkdownResponse(BaseModel):

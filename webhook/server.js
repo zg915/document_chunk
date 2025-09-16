@@ -4,6 +4,15 @@ const helmet = require('helmet');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// Fix for Node.js compatibility
+if (typeof File === 'undefined') {
+    global.File = class File {
+        constructor() {
+            // Mock File class for compatibility
+        }
+    };
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_CALLBACK_URL = process.env.API_CALLBACK_URL || 'http://localhost:8001/api-callback';
