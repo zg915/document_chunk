@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 import time
+import asyncio
+import threading
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,12 +34,16 @@ from integration import (
     _get_weaviate_client,
     chunk_markdown,
     fast_convert_to_markdown,
-    fast_doc_to_weaviate
+    fast_doc_to_weaviate,
+    convert_to_markdown_with_webhook
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Store pending webhook requests
+pending_webhook_requests = {}
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -91,6 +97,19 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     weaviate_connected: bool
+
+class WebhookCallbackRequest(BaseModel):
+    request_id: str
+    success: bool
+    markdown_content: Optional[str] = None
+    extracted_data: Optional[Dict] = None
+    timestamp: str
+
+class WebhookRequest(BaseModel):
+    request_id: str
+    file_path: str
+    webhook_url: str
+    future: asyncio.Future
 
 #create new response model
 class FastConvertToMarkdownResponse(BaseModel):
@@ -147,11 +166,49 @@ async def health_check():
         weaviate_connected=weaviate_connected
     )
 
+# Webhook callback endpoint
+@app.post("/api-callback")
+async def webhook_callback(callback_data: WebhookCallbackRequest):
+    """Receive webhook callback from webhook service."""
+    try:
+        request_id = callback_data.request_id
+        logger.info(f"Received webhook callback for request_id: {request_id}")
+        
+        if request_id in pending_webhook_requests:
+            webhook_request = pending_webhook_requests[request_id]
+            
+            # Set the result in the future
+            if callback_data.success and callback_data.markdown_content:
+                webhook_request.future.set_result({
+                    "success": True,
+                    "markdown_content": callback_data.markdown_content,
+                    "extracted_data": callback_data.extracted_data
+                })
+            else:
+                webhook_request.future.set_result({
+                    "success": False,
+                    "error": "Webhook callback indicated failure"
+                })
+            
+            # Clean up
+            del pending_webhook_requests[request_id]
+            logger.info(f"Processed webhook callback for request_id: {request_id}")
+        else:
+            logger.warning(f"Received callback for unknown request_id: {request_id}")
+        
+        return {"success": True, "message": "Callback processed"}
+        
+    except Exception as e:
+        logger.error(f"Error processing webhook callback: {e}")
+        return {"success": False, "error": str(e)}
+
 # Convert PDF/image to markdown
 @app.post("/convert-doc-to-markdown", response_model=ConvertToMarkdownResponse)
 async def convert_doc_to_markdown(
     file: UploadFile = File(...),
-    use_local: bool = Query(True)
+    use_local: bool = Query(True),
+    use_webhook: bool = Query(False),
+    webhook_url: Optional[str] = Query(None)
 ):
     """Convert an uploaded PDF or image file to markdown format."""
     temp_file_path = None
@@ -159,10 +216,47 @@ async def convert_doc_to_markdown(
         validate_file_format(file.filename, SUPPORTED_FORMATS)
         temp_file_path = await save_uploaded_file(file)
         
-        markdown_content = convert_to_markdown(
-            file_path=temp_file_path,
-            use_local=use_local
-        )
+        # Use webhook-based conversion if requested
+        if use_webhook and webhook_url:
+            # Generate request ID and store pending request
+            request_id = str(uuid.uuid4())
+            future = asyncio.Future()
+            
+            # Store the pending request
+            pending_webhook_requests[request_id] = {
+                "request_id": request_id,
+                "file_path": temp_file_path,
+                "webhook_url": webhook_url,
+                "future": future
+            }
+            
+            # Upload file to datalab with webhook
+            from integration import DocumentProcessor
+            processor = DocumentProcessor()
+            result = processor._upload_to_marker_with_webhook(temp_file_path, webhook_url, request_id)
+            
+            if not result:
+                raise ValueError("Failed to upload file to datalab")
+            
+            # Wait for webhook callback
+            try:
+                webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
+                markdown_content = webhook_result.get("markdown_content")
+                
+                if not markdown_content:
+                    raise ValueError("Webhook returned empty content")
+                    
+            except asyncio.TimeoutError:
+                # Clean up pending request
+                if request_id in pending_webhook_requests:
+                    del pending_webhook_requests[request_id]
+                raise ValueError("Webhook timeout - no response received")
+        else:
+            # Use traditional conversion
+            markdown_content = convert_to_markdown(
+                file_path=temp_file_path,
+                use_local=use_local
+            )
         
         if not markdown_content:
             raise ValueError("Conversion failed")
@@ -178,6 +272,68 @@ async def convert_doc_to_markdown(
         return ConvertToMarkdownResponse(
             success=False,
             message="Failed to convert document",
+            error=str(e)
+        )
+    finally:
+        cleanup_temp_file(temp_file_path)
+
+# Webhook-based convert PDF/image to markdown
+@app.post("/convert-doc-to-markdown-webhook", response_model=ConvertToMarkdownResponse)
+async def convert_doc_to_markdown_webhook(
+    file: UploadFile = File(...),
+    webhook_url: str = Query(...)
+):
+    """Convert an uploaded PDF or image file to markdown using webhook."""
+    temp_file_path = None
+    try:
+        validate_file_format(file.filename, SUPPORTED_FORMATS)
+        temp_file_path = await save_uploaded_file(file)
+        
+        # Generate request ID and create future for webhook callback
+        request_id = str(uuid.uuid4())
+        future = asyncio.Future()
+        
+        # Store the pending request
+        pending_webhook_requests[request_id] = {
+            "request_id": request_id,
+            "file_path": temp_file_path,
+            "webhook_url": webhook_url,
+            "future": future
+        }
+        
+        # Upload file to datalab with webhook
+        from integration import DocumentProcessor
+        processor = DocumentProcessor()
+        result = processor._upload_to_marker_with_webhook(temp_file_path, webhook_url, request_id)
+        
+        if not result:
+            raise ValueError("Failed to upload file to datalab")
+        
+        # Wait for webhook callback
+        try:
+            webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
+            markdown_content = webhook_result.get("markdown_content")
+            
+            if not markdown_content:
+                raise ValueError("Webhook returned empty content")
+                
+        except asyncio.TimeoutError:
+            # Clean up pending request
+            if request_id in pending_webhook_requests:
+                del pending_webhook_requests[request_id]
+            raise ValueError("Webhook timeout - no response received")
+        
+        return ConvertToMarkdownResponse(
+            success=True,
+            markdown_content=markdown_content,
+            message="Document converted successfully via webhook"
+        )
+        
+    except Exception as e:
+        logger.error(f"Webhook conversion error: {e}")
+        return ConvertToMarkdownResponse(
+            success=False,
+            message="Failed to convert document via webhook",
             error=str(e)
         )
     finally:
@@ -437,4 +593,5 @@ async def list_documents(
         client.close()
 
 if __name__ == "__main__":
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8001, reload=True)
+    port = int(os.getenv("PORT", 8001))
+    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=True)

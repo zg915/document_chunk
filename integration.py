@@ -17,6 +17,8 @@ import tempfile
 import time
 import uuid
 import warnings
+import asyncio
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -1392,6 +1394,136 @@ def fast_doc_to_weaviate(
                 logger.info("Closed Weaviate connection")
             except Exception as e:
                 logger.warning(f"Error closing Weaviate connection: {e}")
+
+
+def convert_to_markdown_with_webhook(
+    file_path: str,
+    webhook_url: str,
+    request_id: str,
+    save_to_file: Optional[bool] = False,
+    output_path: Optional[str] = None,
+    timeout: int = 300
+) -> Optional[str]:
+    """
+    Convert a PDF or image file to markdown using webhook instead of polling.
     
+    Args:
+        file_path: Path to the input file (PDF or supported image format)
+        webhook_url: URL where webhook should send results
+        request_id: Unique request identifier
+        save_to_file: Whether to save the markdown to a file
+        output_path: Optional custom output path (defaults to input_name.md)
+        timeout: Maximum time to wait for webhook response (seconds)
+        
+    Returns:
+        Markdown content as string, or None if conversion failed
+        
+    Raises:
+        FileNotFoundError: If the input file doesn't exist
+        ValueError: If the file format is not supported
+        TimeoutError: If webhook doesn't respond within timeout
+    """
+    # Validate input
+    file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
+    file_path = os.path.abspath(file_path)
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    file_ext = os.path.splitext(file_path)[1].lower()
+    if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
+        raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
+    
+    # Create processor
+    processor = DocumentProcessor()
+    logger.info(f"Processing file with webhook: {file_path} (request_id: {request_id})")
+    
+    # Upload file to datalab with webhook URL
+    result = processor._upload_to_marker_with_webhook(file_path, webhook_url, request_id)
+    if not result:
+        logger.error("Failed to upload file to datalab")
+        return None
+    
+    # For now, return None to indicate this needs to be integrated
+    # with the API server's webhook handling system
+    logger.info(f"File uploaded to datalab with request_id: {request_id}. Waiting for webhook callback...")
+    return None
+
+
+def _upload_to_marker_with_webhook(self, file_path: str, webhook_url: str, request_id: str) -> Optional[Dict]:
+    """
+    Upload a file to the Marker API with webhook configuration.
+    
+    Args:
+        file_path: Path to the file to upload
+        webhook_url: URL where webhook should send results
+        request_id: Unique request identifier
+        
+    Returns:
+        API response or None if failed
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    temp_file_created = False
+    
+    try:
+        if file_ext == '.pdf':
+            mime_type = 'application/pdf'
+            process_path = file_path
+        elif file_ext in Config.SUPPORTED_IMAGE_FORMATS:
+            mime_type = 'application/pdf'
+            process_path = self._convert_image_to_pdf(file_path)
+            temp_file_created = True
+        elif file_ext in Config.SUPPORTED_WORD_FORMATS:
+            if file_ext == '.docx':
+                mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            else:  # .doc
+                mime_type = 'application/msword'
+            process_path = file_path
+        elif file_ext in Config.SUPPORTED_EXCEL_FORMATS:
+            if file_ext == '.xlsx':
+                mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:  # .xls
+                mime_type = 'application/vnd.ms-excel'
+            process_path = file_path
+        else:
+            logger.error(f"Unsupported file format: {file_ext}")
+            return None
+        
+        with open(process_path, 'rb') as f:
+            files = {'file': (os.path.basename(process_path), f, mime_type)}
+            
+            # Add webhook parameters to the request
+            data = {
+                **Config.MARKER_PARAMS,
+                'webhook_url': webhook_url,
+                'request_id': request_id
+            }
+            
+            response = requests.post(
+                self.api_url, 
+                headers=self.headers, 
+                files=files, 
+                data=data
+            )
+        
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"File uploaded successfully with request_id: {request_id}")
+            return result
+        else:
+            logger.error(f"API request failed with status {response.status_code}: {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        return None
+        
+    finally:
+        if temp_file_created and os.path.exists(process_path):
+            os.unlink(process_path)
+            logger.debug(f"Cleaned up temporary file: {process_path}")
+
+# Add the method to DocumentProcessor class
+DocumentProcessor._upload_to_marker_with_webhook = _upload_to_marker_with_webhook
 
     
