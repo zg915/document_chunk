@@ -164,8 +164,16 @@ _preloaded_models = None
 
 if __name__ == "__main__":
     """Main execution when run as script."""
+    # Check if GPU is enabled via environment variable
+    gpu_enabled = os.getenv("GPU_ENABLED", "false").lower() == "true"
+
+    if not gpu_enabled:
+        logger.info("GPU_ENABLED=false, skipping model preloading")
+        logger.info("✅ Skipped model preloading (GPU disabled)")
+        sys.exit(0)
+
     logger.info("Starting marker model preloading...")
-    
+
     # Check GPU
     gpu_available = check_gpu_availability()
     

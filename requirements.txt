@@ -13,14 +13,14 @@ transformers>=4.36.0
 requests==2.31.0
 tiktoken==0.5.1
 python-dotenv==1.0.0
-Pillow>=11.1.0
+Pillow==10.2.0
 
 
 # Marker for GPU-accelerated PDF processing
 marker-pdf[gpu]==1.9.2
 
 # Unstructured document processing (with all features)
-unstructured[all-docs]>=0.15.7
+unstructured[all-docs]==0.15.7
 
 # NLP
 nltk>=3.9.0
@@ -49,7 +49,7 @@ markdown==3.5.1
 pi-heif
 pdf2image
 python-docx
-unstructured-inference==0.7.11
+unstructured-inference==0.7.36
 
 # Image processing (for HEIF support)
 pillow-heif

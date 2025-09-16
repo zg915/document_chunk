@@ -8,14 +8,11 @@ This module provides functions to:
 """
 #!/usr/bin/env python3
 # Standard library imports
-import json
 import logging
 import mimetypes
 import os
-import subprocess
 import tempfile
 import time
-import uuid
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -250,13 +247,19 @@ class DocumentProcessor:
     def _process_with_local_marker(self, file_path: str) -> Optional[str]:
         """
         Process a file using local Marker installation.
-        
+
         Args:
             file_path: Path to the file to process
-            
+
         Returns:
             Markdown content or None if failed
         """
+        # Check if GPU is enabled
+        gpu_enabled = os.getenv("GPU_ENABLED", "false").lower() == "true"
+        if not gpu_enabled:
+            logger.info("GPU not enabled (GPU_ENABLED=false), skipping local Marker processing")
+            return None
+
         try:
             logger.info("Using marker Python API for GPU-optimized processing")
             
@@ -343,17 +346,13 @@ class DocumentProcessor:
 
 def convert_to_markdown(
     file_path: str,
-    save_to_file: Optional[bool] = False,
-    output_path: Optional[str] = None,
     use_local: Optional[bool] = None
 ) -> Optional[str]:
     """
     Convert a PDF or image file to markdown format.
-    
+
     Args:
         file_path: Path to the input file (PDF or supported image format)
-        save_to_file: Whether to save the markdown to a file
-        output_path: Optional custom output path (defaults to input_name.md)
         use_local: Whether to use local Marker (True) or API (False). Defaults to True.
         
     Returns:
@@ -412,17 +411,7 @@ def convert_to_markdown(
     
     if not markdown_content:
         return None
-    
-    # Save to file if requested
-    if save_to_file:
-        if output_path is None:
-            output_path = Path(file_path).with_suffix('.md')
-        else:
-            output_path = Path(output_path)
-            
-        output_path.write_text(markdown_content, encoding='utf-8')
-        logger.info(f"Saved markdown to: {output_path}")
-    
+
     return markdown_content
 
 
@@ -444,15 +433,13 @@ class FastFileExtractor:
         '.epub': 'epub', '.odt': 'odt', '.rtf': 'rtf', '.txt': 'text'
     }
     
-    def __init__(self, use_fast_mode: bool = True, include_metadata: bool = True):
+    def __init__(self, include_metadata: bool = True):
         """
         Initialize the FastFileExtractor.
-        
+
         Args:
-            use_fast_mode: Whether to use fast extraction mode (PyMuPDF for PDFs)
             include_metadata: Whether to include metadata in results
         """
-        self.use_fast_mode = use_fast_mode
         self.include_metadata = include_metadata
     
     def extract(self, file_path: str) -> Dict[str, any]:
@@ -524,24 +511,22 @@ class FastFileExtractor:
             }
     
     def _extract_pdf(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from PDF file."""
-        if self.use_fast_mode:
-            try:
-                loader = PyMuPDFLoader(file_path)
-                docs = loader.load()
-                
-                markdown = ""
-                for i, doc in enumerate(docs):
-                    markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
-                
-                return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
-            except Exception:
-                pass
-        
-        loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
-        docs = loader.load()
-        markdown = self._format_documents(docs)
-        return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+        """Extract content from PDF file using PyMuPDF for fast extraction."""
+        try:
+            loader = PyMuPDFLoader(file_path)
+            docs = loader.load()
+
+            markdown = ""
+            for i, doc in enumerate(docs):
+                markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
+
+            return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
+        except Exception:
+            # Fallback to Unstructured if PyMuPDF fails
+            loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
+            docs = loader.load()
+            markdown = self._format_documents(docs)
+            return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
     
     def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Word document."""
@@ -673,19 +658,13 @@ class FastFileExtractor:
 
 def fast_convert_to_markdown(
     file_path: str,
-    save_to_file: Optional[bool] = False,
-    output_path: Optional[str] = None,
-    quality: Optional[str] = "fast",
     include_metadata: Optional[bool] = True
 ) -> Optional[str]:
     """
     Fast convert a document file to markdown format using FastFileExtractor.
-    
+
     Args:
         file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
-        save_to_file: Whether to save the markdown to a file
-        output_path: Optional custom output path (defaults to input_name.md)
-        quality: Conversion quality mode - "fast" or "bnced"
         include_metadata: Whether to include processing metadata in output
         
     Returns:
@@ -707,16 +686,12 @@ def fast_convert_to_markdown(
         supported_formats = list(FastFileExtractor.FILE_LOADERS.keys())
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {supported_formats}")
     
-    # Configure fast extractor based on quality setting
-    use_fast_mode = quality == "fast"
-
     # Initialize fast extractor
     extractor = FastFileExtractor(
-        use_fast_mode=use_fast_mode,
         include_metadata=include_metadata
     )
-    
-    logger.info(f"Fast processing file: {file_path} (quality: {quality})")
+
+    logger.info(f"Fast processing file: {file_path}")
     
     # Extract content
     try:
@@ -746,21 +721,7 @@ def fast_convert_to_markdown(
     except Exception as e:
         logger.error(f"Fast conversion error: {e}")
         return None
-    
-    # Save to file if requested
-    if save_to_file:
-        if output_path is None:
-            output_path = Path(file_path).with_suffix('.md')
-        else:
-            output_path = Path(output_path)
-        
-        try:
-            output_path.write_text(markdown_content, encoding='utf-8')
-            logger.info(f"Fast converted markdown saved to: {output_path}")
-        except Exception as e:
-            logger.error(f"Failed to save markdown file: {e}")
-            return None
-    
+
     return markdown_content
 
 def chunk_markdown(
@@ -879,19 +840,6 @@ def chunk_markdown(
     logger.info(f"Created {len(final_chunks)} chunks from markdown content")
     
     return final_chunks
-
-def _save_chunks_to_file(chunks: List[Dict], output_path: Union[str, Path]) -> None:
-    """
-    Save chunks to a JSON file.
-    
-    Args:
-        chunks: List of chunk dictionaries
-        output_path: Path to save the JSON file
-    """
-    output_path = Path(output_path)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(chunks, f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved {len(chunks)} chunks to: {output_path}")
 
 def save_document_to_weaviate(
     client,
@@ -1141,10 +1089,7 @@ def process_document_to_weaviate(
     document_id: str,
     tenant_id: str,
     use_local: Optional[bool] = True,
-    client: Optional[object] = None,
-    save_markdown: bool = False,
-    save_chunks_json: bool = False,
-    output_dir: Optional[str] = None
+    client: Optional[object] = None
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Complete pipeline to process a document and save to Weaviate.
@@ -1154,15 +1099,13 @@ def process_document_to_weaviate(
     2. Chunks the markdown content
     3. Saves document metadata to Weaviate
     4. Saves chunks to Weaviate with references
-    
+
     Args:
         file_path: Path to the input document (PDF or image)
         document_id: Unique identifier for the document
         tenant_id: Tenant ID for multi-tenancy
+        use_local: Whether to use local Marker (True) or API (False). Defaults to True.
         client: Weaviate client instance (optional, will create if not provided)
-        save_markdown: Whether to save markdown to file (optional)
-        save_chunks_json: Whether to save chunks to JSON file (optional)
-        output_dir: Directory for output files if saving (optional)
         
     Returns:
         Dictionary containing:
@@ -1185,34 +1128,20 @@ def process_document_to_weaviate(
     try:
         # Step 1: Convert document to markdown
         logger.info(f"Processing document: {file_path}")
-        
-        markdown_path = None
-        if save_markdown and output_dir:
-            markdown_path = os.path.join(output_dir, f"{Path(file_path).stem}.md")
-        
+
         markdown_content = convert_to_markdown(
             file_path=file_path,
-            save_to_file=save_markdown,
-            output_path=markdown_path,
             use_local=use_local
         )
-        
+
         if not markdown_content:
             raise ValueError(f"Failed to convert document to markdown: {file_path}")
-        
+
         # Step 2: Chunk the markdown content
-        chunks_json_path = None
-        if save_chunks_json and output_dir:
-            chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
-        
         chunks = chunk_markdown(
             markdown_input=markdown_content
         )
-        
-        # Save chunks to file if requested
-        if save_chunks_json and chunks_json_path:
-            _save_chunks_to_file(chunks, chunks_json_path)
-        
+
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
         
@@ -1268,10 +1197,6 @@ def fast_doc_to_weaviate(
     document_id: str,
     tenant_id: str,
     client: Optional[object] = None,
-    save_markdown: bool = False,
-    save_chunks_json: bool = False,
-    output_dir: Optional[str] = None,
-    quality: Optional[str] = "fast",
     include_metadata: Optional[bool] = True
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
@@ -1288,10 +1213,6 @@ def fast_doc_to_weaviate(
         document_id: Unique identifier for the document
         tenant_id: Tenant ID for multi-tenancy
         client: Weaviate client instance (optional, will create if not provided)
-        save_markdown: Whether to save markdown to file (optional)
-        save_chunks_json: Whether to save chunks to JSON file (optional)
-        output_dir: Directory for output files if saving (optional)
-        quality: Conversion quality mode - "fast" or "balanced"
         include_metadata: Whether to include processing metadata in output
         
     Returns:
@@ -1315,35 +1236,20 @@ def fast_doc_to_weaviate(
     try:
         # Step 1: Convert document to markdown using fast conversion
         logger.info(f"Fast processing document: {file_path}")
-        
-        markdown_path = None
-        if save_markdown and output_dir:
-            markdown_path = os.path.join(output_dir, f"{Path(file_path).stem}.md")
-        
+
         markdown_content = fast_convert_to_markdown(
             file_path=file_path,
-            save_to_file=save_markdown,
-            output_path=markdown_path,
-            quality=quality,
             include_metadata=include_metadata
         )
         
         if not markdown_content:
             raise ValueError(f"Failed to convert document to markdown: {file_path}")
-        
+
         # Step 2: Chunk the markdown content
-        chunks_json_path = None
-        if save_chunks_json and output_dir:
-            chunks_json_path = os.path.join(output_dir, f"{Path(file_path).stem}_chunks.json")
-        
         chunks = chunk_markdown(
             markdown_input=markdown_content
         )
-        
-        # Save chunks to file if requested
-        if save_chunks_json and chunks_json_path:
-            _save_chunks_to_file(chunks, chunks_json_path)
-        
+
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
         

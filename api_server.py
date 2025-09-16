@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 import time
+import requests
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -61,6 +63,8 @@ class ConvertToMarkdownResponse(BaseModel):
     success: bool
     markdown_content: Optional[str] = None
     file_path: Optional[str] = None
+    processing_time: Optional[float] = None
+    content_length: Optional[int] = None
     message: str
     error: Optional[str] = None
 
@@ -92,17 +96,18 @@ class HealthResponse(BaseModel):
     version: str
     weaviate_connected: bool
 
-#create new response model
-class FastConvertToMarkdownResponse(BaseModel):
-    success:bool
-    markdown_content:Optional[str]=None
-    file_path: Optional[str]=None
-    processing_time: Optional[float] = None
-    message: str
-    error: Optional[str] = None
-
 # Supported file formats for convert-doc-to-markdown (PDF and images only)
 SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp', '.docx', '.doc', '.xlsx', '.xls']
+
+# Common error messages
+ERROR_MESSAGES = {
+    "FILE_OR_URL_REQUIRED": "Either file or URL must be provided",
+    "FILE_OR_URL_NOT_BOTH": "Provide either file or URL, not both",
+    "FILE_OR_TEXT_REQUIRED": "Either file or markdown_text must be provided",
+    "FILE_OR_TEXT_NOT_BOTH": "Provide either file or markdown_text, not both",
+    "DOWNLOAD_FAILED": "Failed to download file from URL",
+    "PROCESSING_FAILED": "Error processing URL"
+}
 
 def validate_file_format(filename: str, supported_formats: List[str]) -> None:
     """Validate uploaded file format."""
@@ -130,6 +135,97 @@ def cleanup_temp_file(file_path: str) -> None:
         except Exception as e:
             logger.warning(f"Could not clean up temp file {file_path}: {e}")
 
+async def acquire_file(file: UploadFile = None, url: str = None) -> str:
+    """
+    Acquire a file either from upload or URL.
+
+    Args:
+        file: Optional uploaded file
+        url: Optional URL to download from
+
+    Returns:
+        Path to the temporary file
+
+    Raises:
+        HTTPException: If neither or both are provided
+    """
+    # Check if we have a valid file or URL
+    has_file = file and file.filename
+    has_url = url and url.strip()
+
+    if not has_file and not has_url:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_URL_REQUIRED"])
+
+    if has_file and has_url:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_URL_NOT_BOTH"])
+
+    if has_file:
+        validate_file_format(file.filename, SUPPORTED_FORMATS)
+        return await save_uploaded_file(file)
+    else:
+        temp_file_path = await download_file_from_url(url)
+        validate_file_format(temp_file_path, SUPPORTED_FORMATS)
+        return temp_file_path
+
+async def download_file_from_url(url: str) -> str:
+    """
+    Download a file from URL and save to temp directory.
+
+    Args:
+        url: URL of the file to download
+
+    Returns:
+        Path to the downloaded temporary file
+
+    Raises:
+        HTTPException: If download fails or URL is invalid
+    """
+    try:
+        # Parse URL to get filename
+        parsed_url = urlparse(url)
+        filename = os.path.basename(parsed_url.path)
+        if not filename:
+            filename = "downloaded_file"
+
+        # Add extension if missing
+        if '.' not in filename:
+            # Try to determine extension from content-type
+            response = requests.head(url, timeout=10)
+            content_type = response.headers.get('content-type', '')
+            if 'pdf' in content_type:
+                filename += '.pdf'
+            elif 'image' in content_type:
+                if 'jpeg' in content_type or 'jpg' in content_type:
+                    filename += '.jpg'
+                elif 'png' in content_type:
+                    filename += '.png'
+                elif 'gif' in content_type:
+                    filename += '.gif'
+                elif 'webp' in content_type:
+                    filename += '.webp'
+                else:
+                    filename += '.jpg'  # default for images
+            else:
+                filename += '.pdf'  # default
+
+        # Download file
+        response = requests.get(url, timeout=30, stream=True)
+        response.raise_for_status()
+
+        # Save to temp file
+        temp_file_path = os.path.join(tempfile.gettempdir(), filename)
+        with open(temp_file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        logger.info(f"Downloaded file from URL: {url} to {temp_file_path}")
+        return temp_file_path
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"{ERROR_MESSAGES['DOWNLOAD_FAILED']}: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{ERROR_MESSAGES['PROCESSING_FAILED']}: {str(e)}")
+
 # Health check endpoint
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -150,15 +246,22 @@ async def health_check():
 # Convert PDF/image to markdown
 @app.post("/convert-doc-to-markdown", response_model=ConvertToMarkdownResponse)
 async def convert_doc_to_markdown(
-    file: UploadFile = File(...),
-    use_local: bool = Query(True)
+    request: Request,
+    file: UploadFile = File(default=None),
+    url: str = Form(default=None),
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
 ):
-    """Convert an uploaded PDF or image file to markdown format."""
+    """
+    Convert a PDF or image file to markdown format.
+
+    Accepts either:
+    - An uploaded file (multipart/form-data)
+    - A URL to download the file from
+    """
     temp_file_path = None
     try:
-        validate_file_format(file.filename, SUPPORTED_FORMATS)
-        temp_file_path = await save_uploaded_file(file)
-        
+        temp_file_path = await acquire_file(file, url)
+
         markdown_content = convert_to_markdown(
             file_path=temp_file_path,
             use_local=use_local
@@ -186,17 +289,22 @@ async def convert_doc_to_markdown(
 # fast convert files into markdown 
 @app.post("/fast-convert-to-markdown", response_model=ConvertToMarkdownResponse)
 async def fast_convert_to_mark_down(
-    file: UploadFile = File(...)
+    request: Request,
+    file: UploadFile = File(default=None),
+    url: str = Form(default=None)
 ):
+    """
+    Fast convert a document file to markdown format.
+
+    Accepts either:
+    - An uploaded file (multipart/form-data)
+    - A URL to download the file from
+    """
     temp_file_path = None
     start_time = time.time()
-    
+
     try:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-            temp_file_path = temp_file.name
+        temp_file_path = await acquire_file(file, url)
         
         # Convert to markdown
         markdown_content = fast_convert_to_markdown(
@@ -221,6 +329,11 @@ async def fast_convert_to_mark_down(
         )
         
     except Exception as e:
+        logger.error(f"Fast convert error - file: {file}, url: {url}")
+        logger.error(f"Fast convert error - file.filename: {file.filename if file else 'None'}")
+        logger.error(f"Fast convert error - temp_file_path: {temp_file_path}")
+        logger.error(f"Fast convert error - exception: {str(e)}")
+        logger.error(f"Fast convert error - exception type: {type(e).__name__}")
         return ConvertToMarkdownResponse(
             success=False,
             processing_time=time.time() - start_time,
@@ -235,16 +348,23 @@ async def fast_convert_to_mark_down(
 # Process document and save to Weaviate
 @app.post("/process-doc-to-weaviate", response_model=ProcessDocumentResponse)
 async def upload_and_process_document(
-    file: UploadFile = File(...),
-    tenant_id: str = Query(...),
-    document_id: Optional[str] = Query(None),
-    use_local: bool = Query(True)
+    request: Request,
+    file: UploadFile = File(default=None),
+    url: str = Form(default=None),
+    tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
+    document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)"),
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
 ):
-    """Upload and process document to Weaviate."""
+    """
+    Upload and process document to Weaviate.
+
+    Accepts either:
+    - An uploaded file (multipart/form-data)
+    - A URL to download the file from
+    """
     temp_file_path = None
     try:
-        validate_file_format(file.filename, SUPPORTED_FORMATS)
-        temp_file_path = await save_uploaded_file(file)
+        temp_file_path = await acquire_file(file, url)
         
         doc_id = document_id or str(uuid.uuid4())
         
@@ -277,15 +397,22 @@ async def upload_and_process_document(
 # Fast process document and save to Weaviate
 @app.post("/fast-doc-to-weaviate", response_model=ProcessDocumentResponse)
 async def upload_and_fast_process_document(
-    file: UploadFile = File(...),
-    tenant_id: str = Query(...),
-    document_id: Optional[str] = Query(None)
+    request: Request,
+    file: UploadFile = File(default=None),
+    url: str = Form(default=None),
+    tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
+    document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)")
 ):
-    """Upload and fast process document to Weaviate with configurable quality settings."""
+    """
+    Upload and fast process document to Weaviate.
+
+    Accepts either:
+    - An uploaded file (multipart/form-data)
+    - A URL to download the file from
+    """
     temp_file_path = None
     try:
-        validate_file_format(file.filename, SUPPORTED_FORMATS)
-        temp_file_path = await save_uploaded_file(file)
+        temp_file_path = await acquire_file(file, url)
         
         doc_id = document_id or str(uuid.uuid4())
         
@@ -314,55 +441,40 @@ async def upload_and_fast_process_document(
         cleanup_temp_file(temp_file_path)
 
 
-# Chunk markdown from text content
-@app.post("/chunk-markdown-text", response_model=ChunkMarkdownResponse)
-async def chunk_markdown_text(
-    markdown_content: str
-):
-    """Chunk markdown text content directly."""
-    temp_file_path = None
-    try:
-        # Save text content to temporary file since chunk_markdown requires a file
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
-            f.write(markdown_content)
-            temp_file_path = f.name
-        
-        chunks = chunk_markdown(
-            markdown_input=Path(temp_file_path)
-        )
-        
-        return ChunkMarkdownResponse(
-            success=True,
-            chunks=chunks,
-            total_chunks=len(chunks),
-            message=f"Markdown chunked into {len(chunks)} chunks"
-        )
-        
-    except Exception as e:
-        logger.error(f"Chunking error: {e}")
-        return ChunkMarkdownResponse(
-            success=False,
-            message="Failed to chunk markdown",
-            error=str(e)
-        )
-    finally:
-        cleanup_temp_file(temp_file_path)
-
-# Chunk markdown file (requires file upload)
+# Chunk markdown content (accepts file upload or text)
 @app.post("/chunk-markdown", response_model=ChunkMarkdownResponse)
-async def chunk_markdown_file(
-    file: UploadFile = File(...)
+async def chunk_markdown_content(
+    request: Request,
+    file: UploadFile = File(default=None),
+    markdown_text: str = Form(default=None)
 ):
-    """Upload a markdown file and return chunks."""
+    """
+    Chunk markdown content into smaller pieces.
+
+    Accepts either:
+    - An uploaded markdown file (multipart/form-data)
+    - Raw markdown text content
+    """
+    if not file and not markdown_text:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_TEXT_REQUIRED"])
+
+    if file and markdown_text:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_TEXT_NOT_BOTH"])
+
     temp_file_path = None
     try:
-        # Handle file upload - now required
-        validate_file_format(file.filename, ['.md'])
-        temp_file_path = await save_uploaded_file(file)
-        chunks = chunk_markdown(
-            markdown_input=Path(temp_file_path)
-        )
+        if file:
+            # Handle file upload
+            validate_file_format(file.filename, ['.md'])
+            temp_file_path = await save_uploaded_file(file)
+            chunks = chunk_markdown(
+                markdown_input=Path(temp_file_path)
+            )
+        else:
+            # Handle text input directly
+            chunks = chunk_markdown(
+                markdown_input=markdown_text
+            )
         
         return ChunkMarkdownResponse(
             success=True,
@@ -435,6 +547,38 @@ async def list_documents(
         return {"documents": documents, "total": len(documents)}
     finally:
         client.close()
+
+# Custom OpenAPI schema to fix file upload display
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title="Document Processing API",
+        version="1.0.0",
+        description="API for converting documents to markdown and processing them with Weaviate",
+        routes=app.routes,
+    )
+
+    # Fix file upload parameters in OpenAPI schema
+    for path_item in openapi_schema["paths"].values():
+        for operation in path_item.values():
+            if isinstance(operation, dict) and "requestBody" in operation:
+                content = operation["requestBody"].get("content", {})
+                if "multipart/form-data" in content:
+                    properties = content["multipart/form-data"]["schema"].get("properties", {})
+                    for prop_name, prop_value in properties.items():
+                        if prop_name == "file" and prop_value.get("type") == "string":
+                            prop_value.update({
+                                "type": "string",
+                                "format": "binary"
+                            })
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 if __name__ == "__main__":
     uvicorn.run("api_server:app", host="0.0.0.0", port=8001, reload=True)
