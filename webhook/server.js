@@ -220,12 +220,13 @@ app.post('/webhook', async (req, res) => {
     const isDatalabWebhook = req.body?.status === 'completed' || 
                             req.body?.status === 'complete' || 
                             req.body?.success === true ||
-                            (req.body?.markdown && req.body?.markdown.trim().length > 0);
+                            (req.body?.markdown && req.body?.markdown.trim().length > 0) ||
+                            req.body?.request_check_url; // Check for datalab completion notification
     
     if (isDatalabWebhook) {
       console.log('🎯 Detected datalab processing completion webhook');
       
-      // Extract markdown content directly from webhook body
+      // First, try to extract markdown content directly from webhook body
       const markdownContent = req.body?.markdown || req.body?.content || req.body?.result;
       
       if (markdownContent) {
@@ -241,6 +242,25 @@ app.post('/webhook', async (req, res) => {
         
         // Send callback to API
         await sendCallbackToAPI(extractedContent, webhookPayload);
+      } else if (req.body?.request_check_url) {
+        // If no direct content, fetch from the request_check_url
+        console.log(`🔍 Fetching content from request_check_url: ${req.body.request_check_url}`);
+        
+        try {
+          const extractedContent = await extractDataFromUrl(req.body.request_check_url);
+          
+          if (extractedContent.type !== 'error') {
+            extractedData.push(extractedContent);
+            console.log(`✅ Successfully fetched content from datalab API`);
+            
+            // Send callback to API
+            await sendCallbackToAPI(extractedContent, webhookPayload);
+          } else {
+            console.log(`❌ Failed to fetch content from datalab API: ${extractedContent.error}`);
+          }
+        } catch (error) {
+          console.error(`❌ Error fetching from request_check_url:`, error.message);
+        }
       }
     }
 
