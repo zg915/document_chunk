@@ -2,46 +2,27 @@ version: '3.8'
 
 services:
   document-api:
-    build:
-      context: .
-      cache_from:
-        - document-chunk-api:latest
+    build: .
     ports:
       - "8001:8001"
     environment:
       - PORT=8001
-      - MARKER_API_KEY=${MARKER_API_KEY:-ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI}
+      - MARKER_API_KEY=${MARKER_API_KEY}
       - MARKER_API_URL=${MARKER_API_URL:-https://www.datalab.to/api/v1/marker}
-      - USE_LOCAL_MARKER=${USE_LOCAL_MARKER:-true}
+      - USE_LOCAL_MARKER=${USE_LOCAL_MARKER:-false}
       - WEAVIATE_API_KEY=${WEAVIATE_API_KEY}
       - WEAVIATE_URL=${WEAVIATE_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GEMINI_API_KEY=${GOOGLE_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL:-http://webhook:3000/webhook}
-    volumes:
-      # Mount the entire source directory for better file watching
-      - .:/app
-      # Persist marker model cache to avoid re-downloading
-      - marker_cache:/home/app/.cache
-    deploy:
-      resources:
-        limits:
-          memory: 16G
-        reservations:
-          memory: 4G
     restart: unless-stopped
     depends_on:
       - webhook
 
   webhook:
-    build:
-      context: ./webhook
+    build: ./webhook
     ports:
       - "3000:3000"
     environment:
       - PORT=3000
       - API_CALLBACK_URL=http://document-api:8001/api-callback
     restart: unless-stopped
-
-volumes:
-  marker_cache:
