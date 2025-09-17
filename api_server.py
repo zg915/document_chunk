@@ -182,13 +182,13 @@ async def webhook_callback(callback_data: WebhookCallbackRequest):
             
             # Set the result in the future
             if callback_data.success and callback_data.markdown_content:
-                webhook_request.future.set_result({
+                webhook_request["future"].set_result({
                     "success": True,
                     "markdown_content": callback_data.markdown_content,
                     "extracted_data": callback_data.extracted_data
                 })
             else:
-                webhook_request.future.set_result({
+                webhook_request["future"].set_result({
                     "success": False,
                     "error": "Webhook callback indicated failure"
                 })
