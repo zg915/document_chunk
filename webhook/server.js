@@ -30,15 +30,27 @@ const extractedData = [];
 // Store pending requests waiting for webhook callbacks
 const pendingRequests = new Map();
 
+// Store mapping between API request_id and datalab request_id
+const requestIdMapping = new Map();
+
 // Simple webhook server - no authentication needed
 
 // Helper function to send callback to API
 async function sendCallbackToAPI(extractedContent, webhookPayload) {
   try {
     // Look for request_id in the webhook payload
-    const requestId = webhookPayload.body?.request_id || 
-                     webhookPayload.body?.id || 
-                     webhookPayload.body?.job_id;
+    let requestId = webhookPayload.body?.request_id || 
+                   webhookPayload.body?.id || 
+                   webhookPayload.body?.job_id;
+    
+    // If this is a datalab completion webhook, extract the datalab request_id
+    if (webhookPayload.body?.request_check_url) {
+      const urlMatch = webhookPayload.body.request_check_url.match(/\/marker\/([^/?]+)/);
+      if (urlMatch) {
+        requestId = urlMatch[1];
+        console.log(`🔍 Using datalab request_id: ${requestId}`);
+      }
+    }
     
     if (!requestId) {
       console.log('⚠️ No request_id found in webhook payload, skipping API callback');
@@ -225,6 +237,16 @@ app.post('/webhook', async (req, res) => {
     
     if (isDatalabWebhook) {
       console.log('🎯 Detected datalab processing completion webhook');
+      
+      // Extract datalab request_id from the request_check_url
+      let datalabRequestId = null;
+      if (req.body?.request_check_url) {
+        const urlMatch = req.body.request_check_url.match(/\/marker\/([^/?]+)/);
+        if (urlMatch) {
+          datalabRequestId = urlMatch[1];
+          console.log(`🔍 Found datalab request_id: ${datalabRequestId}`);
+        }
+      }
       
       // First, try to extract markdown content directly from webhook body
       const markdownContent = req.body?.markdown || req.body?.content || req.body?.result;
