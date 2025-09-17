@@ -241,6 +241,17 @@ async def convert_doc_to_markdown(
             if not result:
                 raise ValueError("Failed to upload file to datalab")
             
+            # Extract the datalab request_id from the response
+            datalab_request_id = result.get('request_id') or result.get('id')
+            if not datalab_request_id:
+                raise ValueError("No request_id returned from datalab")
+            
+            # Update the pending request to use datalab request_id
+            if datalab_request_id != request_id:
+                pending_webhook_requests[datalab_request_id] = pending_webhook_requests.pop(request_id)
+                pending_webhook_requests[datalab_request_id]["request_id"] = datalab_request_id
+                logger.info(f"Updated pending request to use datalab request_id: {datalab_request_id}")
+            
             # Wait for webhook callback
             try:
                 webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
@@ -251,8 +262,8 @@ async def convert_doc_to_markdown(
                     
             except asyncio.TimeoutError:
                 # Clean up pending request
-                if request_id in pending_webhook_requests:
-                    del pending_webhook_requests[request_id]
+                if datalab_request_id in pending_webhook_requests:
+                    del pending_webhook_requests[datalab_request_id]
                 raise ValueError("Webhook timeout - no response received")
         else:
             # Use traditional conversion
@@ -312,6 +323,17 @@ async def convert_doc_to_markdown_webhook(
         if not result:
             raise ValueError("Failed to upload file to datalab")
         
+        # Extract the datalab request_id from the response
+        datalab_request_id = result.get('request_id') or result.get('id')
+        if not datalab_request_id:
+            raise ValueError("No request_id returned from datalab")
+        
+        # Update the pending request to use datalab request_id
+        if datalab_request_id != request_id:
+            pending_webhook_requests[datalab_request_id] = pending_webhook_requests.pop(request_id)
+            pending_webhook_requests[datalab_request_id]["request_id"] = datalab_request_id
+            logger.info(f"Updated pending request to use datalab request_id: {datalab_request_id}")
+        
         # Wait for webhook callback
         try:
             webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
@@ -322,8 +344,8 @@ async def convert_doc_to_markdown_webhook(
                 
         except asyncio.TimeoutError:
             # Clean up pending request
-            if request_id in pending_webhook_requests:
-                del pending_webhook_requests[request_id]
+            if datalab_request_id in pending_webhook_requests:
+                del pending_webhook_requests[datalab_request_id]
             raise ValueError("Webhook timeout - no response received")
         
         return ConvertToMarkdownResponse(
