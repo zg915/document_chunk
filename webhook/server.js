@@ -186,7 +186,7 @@ app.post('/webhook', async (req, res) => {
     webhookData.push(webhookPayload);
 
     // Log the webhook data
-    console.log('📨 New webhook received:', {
+    console.log('📨 Received webhook:', {
       id: webhookPayload.id,
       timestamp: webhookPayload.timestamp,
       headers: webhookPayload.headers,
@@ -264,7 +264,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-
     // Extract data from URLs if found
     let extractedResults = [];
     if (urlsToExtract.length > 0) {
@@ -335,7 +334,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-
 // Get all webhooks endpoint
 app.get('/webhooks', (req, res) => {
   res.json({
@@ -345,12 +343,12 @@ app.get('/webhooks', (req, res) => {
   });
 });
 
-// Get all webhooks endpoint (simple)
-app.get('/webhooks', (req, res) => {
+// Health check endpoint
+app.get('/health', (req, res) => {
   res.json({
-    success: true,
-    count: webhookData.length,
-    webhooks: webhookData
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
@@ -362,7 +360,8 @@ app.use('*', (req, res) => {
     availableEndpoints: [
       'GET / - Health check',
       'POST /webhook - Receive webhook and extract data from URLs',
-      'GET /webhooks - List all webhooks'
+      'GET /webhooks - List all webhooks',
+      'GET /health - Health check'
     ]
   });
 });
@@ -379,9 +378,10 @@ app.use((error, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Webhook server is running on port ${PORT}`);
-  console.log(`📡 Webhook URL: http://localhost:${PORT}/webhook`);
-  console.log(`📊 Dashboard: http://localhost:${PORT}/webhooks`);
+  console.log(`🚀 Webhook server running on port ${PORT}`);
+  console.log(`📡 API callback URL: ${API_CALLBACK_URL}`);
+  console.log(`🔗 Webhook endpoint: http://0.0.0.0:${PORT}/webhook`);
+  console.log(`❤️  Health check: http://0.0.0.0:${PORT}/health`);
 });
 
 module.exports = app;
