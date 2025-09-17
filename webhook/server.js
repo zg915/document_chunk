@@ -1,10 +1,4 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const axios = require('axios');
-const cheerio = require('cheerio');
-
-// Fix for Node.js compatibility
+// Fix for Node.js compatibility - MUST be first
 if (typeof File === 'undefined') {
     global.File = class File {
         constructor() {
@@ -12,6 +6,12 @@ if (typeof File === 'undefined') {
         }
     };
 }
+
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
