@@ -31,7 +31,16 @@ services:
       - WEAVIATE_URL=${WEAVIATE_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GOOGLE_API_KEY}
-      - GPU_ENABLED=${GPU_ENABLED:-false}
+      - GPU_ENABLED=${GPU_ENABLED:-true}
+      # GPU optimization environment variables
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - VECLIB_MAXIMUM_THREADS=1
+      - NUMEXPR_MAX_THREADS=1
+      - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     restart: unless-stopped
 
 volumes:
