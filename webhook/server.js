@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Fix for Node.js compatibility
 if (typeof File === 'undefined') {
     global.File = class File {
@@ -7,6 +8,8 @@ if (typeof File === 'undefined') {
     };
 }
 
+=======
+>>>>>>> parent of 42baa98 (Fix Node.js and Python errors)
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
