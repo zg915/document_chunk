@@ -45,3 +45,12 @@ services:
 
 volumes:
   marker_cache:
+
+    webhook:
+    build: ./webhook
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - API_CALLBACK_URL=http://document-api:8001/api-callback
+    restart: unless-stopped
