@@ -34,6 +34,9 @@ langchain-community>=0.0.25
 # PyMuPDF for fast PDF processing
 PyMuPDF>=1.23.0
 
+# PyPDF2 for PDF page counting
+PyPDF2>=3.0.0
+
 # OCR support (optional)
 pytesseract>=0.3.10
 
