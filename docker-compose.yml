@@ -1,5 +1,5 @@
 services:
-  # Default CPU-only service
+  # Single service that reads GPU_ENABLED from .env
   document-api:
     build:
       context: .
@@ -7,37 +7,6 @@ services:
         - document-chunk-api:latest
     ports:
       - "8001:8001"
-    volumes:
-      # Mount the entire source directory for better file watching
-      - .:/app
-      # Persist marker model cache to avoid re-downloading
-      - marker_cache:/home/app/.cache
-    deploy:
-      resources:
-        limits:
-          memory: 16G
-        reservations:
-          memory: 4G
-    environment:
-      - MARKER_API_KEY=${MARKER_API_KEY:-ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI}
-      - MARKER_API_URL=${MARKER_API_URL:-https://www.datalab.to/api/v1/marker}
-      - WEAVIATE_API_KEY=${WEAVIATE_API_KEY}
-      - WEAVIATE_URL=${WEAVIATE_URL}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GEMINI_API_KEY=${GOOGLE_API_KEY}
-      - GPU_ENABLED=false
-    restart: unless-stopped
-
-  # GPU-enabled service (only runs with --profile gpu)
-  document-api-gpu:
-    build:
-      context: .
-      cache_from:
-        - document-chunk-api:latest
-    profiles: ["gpu"]
-    ports:
-      - "8001:8001"
-    gpus: all
     volumes:
       # Mount the entire source directory for better file watching
       - .:/app
@@ -62,7 +31,16 @@ services:
       - WEAVIATE_URL=${WEAVIATE_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GOOGLE_API_KEY}
-      - GPU_ENABLED=true
+      - GPU_ENABLED=${GPU_ENABLED:-true}
+      # GPU optimization environment variables
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - VECLIB_MAXIMUM_THREADS=1
+      - NUMEXPR_MAX_THREADS=1
+      - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     restart: unless-stopped
 
 volumes:

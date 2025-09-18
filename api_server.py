@@ -19,6 +19,8 @@ import logging
 import time
 import requests
 from urllib.parse import urlparse
+import asyncio
+import threading
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +28,7 @@ from pydantic import BaseModel
 import uvicorn
 
 # Import our document processing functions
-# Add one more import 
+# Add one more import
 from integration import (
     convert_to_markdown,
     process_document_to_weaviate,
@@ -34,12 +36,16 @@ from integration import (
     _get_weaviate_client,
     chunk_markdown,
     fast_convert_to_markdown,
-    fast_doc_to_weaviate
+    fast_doc_to_weaviate,
+    get_webhook_manager
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Get the webhook manager instance from integration module
+webhook_manager = get_webhook_manager()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -95,6 +101,31 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     weaviate_connected: bool
+
+class WebhookCallbackRequest(BaseModel):
+    request_id: str
+    success: bool
+    markdown_content: Optional[str] = None
+    extracted_data: Optional[Dict] = None
+    timestamp: str
+
+class WebhookRequest(BaseModel):
+    request_id: str
+    file_path: str
+    webhook_url: str
+    future: asyncio.Future
+    
+    class Config:
+        arbitrary_types_allowed = True
+
+#create new response model
+class FastConvertToMarkdownResponse(BaseModel):
+    success:bool
+    markdown_content:Optional[str]=None
+    file_path: Optional[str]=None
+    processing_time: Optional[float] = None
+    message: str
+    error: Optional[str] = None
 
 # Supported file formats for convert-doc-to-markdown (PDF and images only)
 SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp', '.docx', '.doc', '.xlsx', '.xls']
@@ -243,13 +274,41 @@ async def health_check():
         weaviate_connected=weaviate_connected
     )
 
+# Webhook callback endpoint
+@app.post("/api-callback")
+async def webhook_callback(callback_data: WebhookCallbackRequest):
+    """Receive webhook callback from webhook service."""
+    try:
+        request_id = callback_data.request_id
+        logger.info(f"Received webhook callback for request_id: {request_id}")
+
+        # Use the webhook manager to process the callback
+        success = webhook_manager.process_callback(
+            request_id=request_id,
+            success=callback_data.success,
+            markdown_content=callback_data.markdown_content,
+            extracted_data=callback_data.extracted_data
+        )
+
+        if success:
+            logger.info(f"Processed webhook callback for request_id: {request_id}")
+            return {"success": True, "message": "Callback processed"}
+        else:
+            logger.warning(f"Received callback for unknown request_id: {request_id}")
+            return {"success": False, "error": "Unknown request_id"}
+
+    except Exception as e:
+        logger.error(f"Error processing webhook callback: {e}")
+        return {"success": False, "error": str(e)}
+
 # Convert PDF/image to markdown
 @app.post("/convert-doc-to-markdown", response_model=ConvertToMarkdownResponse)
 async def convert_doc_to_markdown(
     request: Request,
     file: UploadFile = File(default=None),
     url: str = Form(default=None),
-    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)"),
+    webhook_url: Optional[str] = Query(None)
 ):
     """
     Convert a PDF or image file to markdown format.
@@ -259,32 +318,43 @@ async def convert_doc_to_markdown(
     - A URL to download the file from
     """
     temp_file_path = None
+    start_time = time.time()
+
     try:
+        # Acquire file from either upload or URL
         temp_file_path = await acquire_file(file, url)
 
-        markdown_content = convert_to_markdown(
+        # Use the unified convert_to_markdown function with webhook support
+        markdown_content = await convert_to_markdown(
             file_path=temp_file_path,
-            use_local=use_local
+            use_local=use_local,
+            webhook_url=webhook_url
         )
-        
+
         if not markdown_content:
             raise ValueError("Conversion failed")
-        
+
+        processing_time = time.time() - start_time
+
         return ConvertToMarkdownResponse(
             success=True,
             markdown_content=markdown_content,
+            processing_time=processing_time,
+            content_length=len(markdown_content),
             message="Document converted successfully"
         )
-        
+
     except Exception as e:
         logger.error(f"Conversion error: {e}")
         return ConvertToMarkdownResponse(
             success=False,
+            processing_time=time.time() - start_time,
             message="Failed to convert document",
             error=str(e)
         )
     finally:
         cleanup_temp_file(temp_file_path)
+
 
 # fast convert files into markdown 
 @app.post("/fast-convert-to-markdown", response_model=ConvertToMarkdownResponse)
@@ -353,7 +423,8 @@ async def upload_and_process_document(
     url: str = Form(default=None),
     tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
     document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)"),
-    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)"),
+    webhook_url: Optional[str] = Query(None, description="Webhook URL for async processing callbacks")
 ):
     """
     Upload and process document to Weaviate.
@@ -363,23 +434,29 @@ async def upload_and_process_document(
     - A URL to download the file from
     """
     temp_file_path = None
+    start_time = time.time()
+
     try:
         temp_file_path = await acquire_file(file, url)
-        
+
         doc_id = document_id or str(uuid.uuid4())
-        
-        result = process_document_to_weaviate(
+
+        result = await process_document_to_weaviate(
             file_path=temp_file_path,
             document_id=doc_id,
             tenant_id=tenant_id,
-            use_local=use_local
+            use_local=use_local,
+            webhook_url=webhook_url
         )
-        
+
+        processing_time = time.time() - start_time
+
         return ProcessDocumentResponse(
             success=True,
             document_id=result["document_id"],
             file_name=result["file_name"],
             total_chunks=result["total_chunks"],
+            processing_time=processing_time,
             message=f"Document processed with {result['total_chunks']} chunks"
         )
         
@@ -387,6 +464,7 @@ async def upload_and_process_document(
         logger.error(f"Processing error: {e}")
         return ProcessDocumentResponse(
             success=False,
+            processing_time=time.time() - start_time,
             message="Failed to process document",
             error=str(e)
         )
@@ -411,29 +489,35 @@ async def upload_and_fast_process_document(
     - A URL to download the file from
     """
     temp_file_path = None
+    start_time = time.time()
+
     try:
         temp_file_path = await acquire_file(file, url)
-        
+
         doc_id = document_id or str(uuid.uuid4())
-        
+
         result = fast_doc_to_weaviate(
             file_path=temp_file_path,
             document_id=doc_id,
             tenant_id=tenant_id
         )
-        
+
+        processing_time = time.time() - start_time
+
         return ProcessDocumentResponse(
             success=True,
             document_id=result["document_id"],
             file_name=result["file_name"],
             total_chunks=result["total_chunks"],
-            message=f"Document fast processed with {result['total_chunks']} chunks)"
+            processing_time=processing_time,
+            message=f"Document fast processed with {result['total_chunks']} chunks"
         )
         
     except Exception as e:
         logger.error(f"Fast processing error: {e}")
         return ProcessDocumentResponse(
             success=False,
+            processing_time=time.time() - start_time,
             message="Failed to fast process document",
             error=str(e)
         )
@@ -581,4 +665,5 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 if __name__ == "__main__":
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8001, reload=True)
+    port = int(os.getenv("PORT", 8001))
+    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=True)
