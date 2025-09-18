@@ -42,9 +42,8 @@ services:
       - NUMEXPR_MAX_THREADS=1
       - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     restart: unless-stopped
-
-volumes:
-  marker_cache:
+    depends_on:
+      - webhook
 
     webhook:
     build: ./webhook
