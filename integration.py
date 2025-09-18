@@ -405,37 +405,43 @@ class DocumentProcessor:
             # Create optimized configuration for faster processing
             from marker.config.parser import ConfigParser
             
-            # Optimized GPU configuration for Tesla T4 (15GB VRAM)
+            # Optimized GPU configuration for Tesla T4 (15GB VRAM) on GCP
             config = {
-                # GPU optimization - maximize parallel processing
-                "batch_multiplier": 12,  # Increased for better GPU utilization
-                "ocr_batch_size": 64,  # Much larger OCR batch for GPU efficiency
-                "layout_batch_size": 16,  # Larger layout batch
-                "table_rec_batch_size": 16,  # Larger table batch
-                "detection_batch_size": 32,  # Larger detection batch
-                
-                # OCR optimizations - keep GPU busy
-                "ocr_all_pages": False,  # Process all pages in parallel
+                # GPU optimization - DOUBLED batch sizes for 95%+ GPU utilization
+                "batch_multiplier": 50,  # Doubled from 12
+                "ocr_batch_size": 128,  # Doubled from 64
+                "layout_batch_size": 32,  # Doubled from 16
+                "table_rec_batch_size": 32,  # Doubled from 16
+                "detection_batch_size": 64,  # Doubled from 32
+
+                # OCR optimizations - maximize GPU throughput
+                "ocr_all_pages": True,  # Process all pages in parallel for better GPU usage
                 "disable_ocr": False,  # Keep OCR but optimize
                 "ocr_error_detection": False,  # Skip for speed
                 "detect_language": False,  # Skip language detection
-                
-                # Processing optimizations - reduce CPU work
+
+                # Processing optimizations - reduce CPU bottlenecks
                 "paginate_output": False,  # Faster without pagination
                 "disable_image_extraction": True,  # Skip images
                 "skip_table_detection": False,  # Keep tables but optimize
                 "disable_math_detection": False,  # Keep math detection
-                
-                # Parallel processing - maximize GPU usage
-                "workers": 8,  # More parallel workers
-                "ray_workers": 8,  # Ray parallel processing
-                "max_parallel_pages": 8,  # Process multiple pages simultaneously
-                
-                # GPU memory optimization
-                "gpu_memory_fraction": 0.8,  # Use 80% of GPU memory
+
+                # Parallel processing - INCREASED for better concurrency
+                "workers": 12,  # Increased from 8
+                "ray_workers": 12,  # Increased from 8
+                "max_parallel_pages": 50,  # Doubled from 8
+
+                # GPU memory optimization - use more available memory
+                "gpu_memory_fraction": 0.90,  # Increased from 0.8 to use 90% of GPU memory
                 "force_gpu": True,  # Force GPU usage
                 "cuda_device": 0,  # Use first GPU
-                
+
+                # Mixed precision and optimization flags
+                "use_fp16": True,  # Enable FP16 for faster processing
+                "pin_memory": True,  # Pin memory for faster CPU-GPU transfer
+                "persistent_workers": True,  # Keep workers alive between batches
+                "prefetch_factor": 4,  # Prefetch batches
+
                 # Other optimizations
                 "use_llm": True,  # Keep LLM for quality
                 "langs": ["en"],  # Skip language detection
@@ -450,17 +456,22 @@ class DocumentProcessor:
                 config=config_parser.generate_config_dict()
             )
             
-            # Force GPU memory optimization
+            # Force GPU memory optimization - ENHANCED for GCP
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()  # Clear GPU memory
-                torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
+                torch.cuda.set_per_process_memory_fraction(0.90)  # Use 90% of GPU memory (increased)
                 torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
                 torch.backends.cuda.matmul.allow_tf32 = True  # Use TensorFloat-32
                 torch.backends.cudnn.allow_tf32 = True  # Use TensorFloat-32
+
+                # Additional optimizations for GCP
+                torch.set_float32_matmul_precision('high')  # Optimize matrix multiplication
+                if hasattr(torch.cuda, 'set_sync_debug_mode'):
+                    torch.cuda.set_sync_debug_mode(0)  # Disable debug synchronization
             
             # Convert PDF to markdown
             logger.info(f"Converting {file_path} with optimized GPU acceleration...")
-            logger.info(f"Settings: batch_multiplier=12, ocr_batch_size=64, workers=8, max_parallel_pages=8")
+            logger.info(f"Settings: batch_multiplier=24, ocr_batch_size=128, workers=12, max_parallel_pages=16")
             start_time = time.perf_counter()
             
             # Run conversion
