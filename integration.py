@@ -415,7 +415,7 @@ class DocumentProcessor:
                 "detection_batch_size": 32,  # Larger detection batch
                 
                 # OCR optimizations - keep GPU busy
-                "ocr_all_pages": false,  # Process all pages in parallel
+                "ocr_all_pages": False,  # Process all pages in parallel
                 "disable_ocr": False,  # Keep OCR but optimize
                 "ocr_error_detection": False,  # Skip for speed
                 "detect_language": False,  # Skip language detection
