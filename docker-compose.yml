@@ -45,7 +45,7 @@ services:
     depends_on:
       - webhook
 
-    webhook:
+  webhook:
     build: ./webhook
     ports:
       - "3000:3000"
@@ -53,3 +53,6 @@ services:
       - PORT=3000
       - API_CALLBACK_URL=http://document-api:8001/api-callback
     restart: unless-stopped
+
+volumes:
+  marker_cache:
