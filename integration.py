@@ -466,7 +466,7 @@ class DocumentProcessor:
                     "prefetch_factor": 2,
 
                     # OCR optimizations
-                    "ocr_all_pages": True,
+                    # "ocr_all_pages": True,
                     "disable_ocr": False,
                     "ocr_error_detection": False,
                     "detect_language": False,
