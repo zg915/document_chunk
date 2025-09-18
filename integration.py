@@ -505,7 +505,7 @@ class DocumentProcessor:
                     "prefetch_factor": 4,
 
                     # OCR optimizations - maximize GPU throughput
-                    "ocr_all_pages": True,
+                    # "ocr_all_pages": True,
                     "disable_ocr": False,
                     "ocr_error_detection": False,
                     "detect_language": False,
