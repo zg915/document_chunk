@@ -405,33 +405,41 @@ class DocumentProcessor:
             # Create optimized configuration for faster processing
             from marker.config.parser import ConfigParser
             
-            # Speed optimizations
+            # Optimized GPU configuration for Tesla T4 (15GB VRAM)
             config = {
-                # GPU optimization for Tesla T4 (16GB VRAM)
-                "batch_multiplier": 8,  # Increase to 8x for Tesla T4
-                "ocr_batch_size": 32,  # Larger OCR batch size
-                "layout_batch_size": 8,  # Larger layout batch
-                "table_rec_batch_size": 8,  # Larger table batch
+                # GPU optimization - maximize parallel processing
+                "batch_multiplier": 12,  # Increased for better GPU utilization
+                "ocr_batch_size": 64,  # Much larger OCR batch for GPU efficiency
+                "layout_batch_size": 16,  # Larger layout batch
+                "table_rec_batch_size": 16,  # Larger table batch
+                "detection_batch_size": 32,  # Larger detection batch
                 
-                # OCR optimizations
-                "ocr_all_pages": False,  # Only OCR when needed
+                # OCR optimizations - keep GPU busy
+                "ocr_all_pages": True,  # Process all pages in parallel
                 "disable_ocr": False,  # Keep OCR but optimize
-                "ocr_error_detection": False,  # Skip OCR error detection for speed
+                "ocr_error_detection": False,  # Skip for speed
                 "detect_language": False,  # Skip language detection
                 
-                # Processing optimizations
+                # Processing optimizations - reduce CPU work
                 "paginate_output": False,  # Faster without pagination
                 "disable_image_extraction": True,  # Skip images
                 "skip_table_detection": False,  # Keep tables but optimize
+                "disable_math_detection": False,  # Keep math detection
                 
-                # Parallel processing
-                "workers": 6,  # More parallel workers
-                "ray_workers": 6,  # Ray parallel processing
+                # Parallel processing - maximize GPU usage
+                "workers": 8,  # More parallel workers
+                "ray_workers": 8,  # Ray parallel processing
+                "max_parallel_pages": 8,  # Process multiple pages simultaneously
+                
+                # GPU memory optimization
+                "gpu_memory_fraction": 0.8,  # Use 80% of GPU memory
+                "force_gpu": True,  # Force GPU usage
+                "cuda_device": 0,  # Use first GPU
                 
                 # Other optimizations
-                "use_llm": True,  # No LLM for speed
-                "force_gpu": True,  # Force GPU usage
+                "use_llm": True,  # Keep LLM for quality
                 "langs": ["en"],  # Skip language detection
+                "full_document_analysis": True,  # Process entire document
             }
             
             config_parser = ConfigParser(config)
@@ -442,9 +450,17 @@ class DocumentProcessor:
                 config=config_parser.generate_config_dict()
             )
             
+            # Force GPU memory optimization
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()  # Clear GPU memory
+                torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
+                torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+                torch.backends.cuda.matmul.allow_tf32 = True  # Use TensorFloat-32
+                torch.backends.cudnn.allow_tf32 = True  # Use TensorFloat-32
+            
             # Convert PDF to markdown
-            logger.info(f"Converting {file_path} with GPU acceleration...")
-            logger.info(f"Settings: batch_multiplier=4, ocr_all_pages=False, workers=4")
+            logger.info(f"Converting {file_path} with optimized GPU acceleration...")
+            logger.info(f"Settings: batch_multiplier=12, ocr_batch_size=64, workers=8, max_parallel_pages=8")
             start_time = time.perf_counter()
             
             # Run conversion
