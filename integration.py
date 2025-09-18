@@ -63,12 +63,41 @@ from langchain_community.document_loaders import (
     PyMuPDFLoader
 )
 
+# PDF processing imports
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+
 # Configuration
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv('.env')
+
+
+def get_pdf_page_count(file_path: str) -> int:
+    """
+    Get the number of pages in a PDF file.
+
+    Args:
+        file_path: Path to the PDF file
+
+    Returns:
+        Number of pages in the PDF
+    """
+    try:
+        if PyPDF2 is None:
+            logger.warning("PyPDF2 not available, estimating 10 pages")
+            return 10
+
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            return len(pdf_reader.pages)
+    except Exception as e:
+        logger.warning(f"Could not count PDF pages: {e}, estimating 10 pages")
+        return 10
 
 
 class WebhookManager:
@@ -404,49 +433,95 @@ class DocumentProcessor:
             
             # Create optimized configuration for faster processing
             from marker.config.parser import ConfigParser
-            
-            # Optimized GPU configuration for Tesla T4 (15GB VRAM) on GCP
-            config = {
-                # GPU optimization - DOUBLED batch sizes for 95%+ GPU utilization
-                "batch_multiplier": 24,  # Doubled from 12
-                "ocr_batch_size": 128,  # Doubled from 64
-                "layout_batch_size": 32,  # Doubled from 16
-                "table_rec_batch_size": 32,  # Doubled from 16
-                "detection_batch_size": 64,  # Doubled from 32
 
-                # OCR optimizations - maximize GPU throughput
-                "ocr_all_pages": True,  # Process all pages in parallel for better GPU usage
-                "disable_ocr": False,  # Keep OCR but optimize
-                "ocr_error_detection": False,  # Skip for speed
-                "detect_language": False,  # Skip language detection
+            # Count pages for dynamic configuration
+            page_count = get_pdf_page_count(file_path)
+            logger.info(f"Document has {page_count} pages - applying dynamic GPU configuration")
 
-                # Processing optimizations - reduce CPU bottlenecks
-                "paginate_output": False,  # Faster without pagination
-                "disable_image_extraction": True,  # Skip images
-                "skip_table_detection": False,  # Keep tables but optimize
-                "disable_math_detection": False,  # Keep math detection
+            # Dynamic GPU configuration based on document size
+            if page_count <= 20:
+                # Small document settings - avoid over-parallelization overhead
+                config = {
+                    # GPU optimization - optimized for small documents
+                    "batch_multiplier": min(4, page_count),
+                    "ocr_batch_size": 32,
+                    "layout_batch_size": 16,
+                    "table_rec_batch_size": 16,
+                    "detection_batch_size": 32,
 
-                # Parallel processing - INCREASED for better concurrency
-                "workers": 12,  # Increased from 8
-                "ray_workers": 12,  # Increased from 8
-                "max_parallel_pages": 50,  # Doubled from 8
+                    # Parallel processing - minimal for small docs
+                    "workers": 4,
+                    "ray_workers": 4,
+                    "max_parallel_pages": min(8, page_count),
 
-                # GPU memory optimization - use more available memory
-                "gpu_memory_fraction": 0.90,  # Increased from 0.8 to use 90% of GPU memory
-                "force_gpu": True,  # Force GPU usage
-                "cuda_device": 0,  # Use first GPU
+                    # GPU memory optimization
+                    "gpu_memory_fraction": 0.75,
+                    "force_gpu": True,
+                    "cuda_device": 0,
 
-                # Mixed precision and optimization flags
-                "use_fp16": True,  # Enable FP16 for faster processing
-                "pin_memory": True,  # Pin memory for faster CPU-GPU transfer
-                "persistent_workers": True,  # Keep workers alive between batches
-                "prefetch_factor": 4,  # Prefetch batches
+                    # Mixed precision and optimization flags
+                    "use_fp16": True,
+                    "pin_memory": True,
+                    "persistent_workers": False,  # Don't persist for small docs
+                    "prefetch_factor": 2,
 
-                # Other optimizations
-                # "use_llm": True,  # Keep LLM for quality
-                # "langs": ["en"],  # Skip language detection
-                # "full_document_analysis": True,  # Process entire document
-            }
+                    # OCR optimizations
+                    "ocr_all_pages": True,
+                    "disable_ocr": False,
+                    "ocr_error_detection": False,
+                    "detect_language": False,
+
+                    # Processing optimizations
+                    "paginate_output": False,
+                    "disable_image_extraction": True,
+                    "skip_table_detection": False,
+                    "disable_math_detection": False,
+                }
+                logger.info(f"Using SMALL document config: batch_multiplier={config['batch_multiplier']}, max_parallel_pages={config['max_parallel_pages']}")
+            else:
+                # Large document settings - maximize GPU utilization
+                config = {
+                    # GPU optimization - DOUBLED batch sizes for 95%+ GPU utilization
+                    "batch_multiplier": 50,  # Optimized for large docs
+                    "ocr_batch_size": 128,
+                    "layout_batch_size": 32,
+                    "table_rec_batch_size": 32,
+                    "detection_batch_size": 64,
+
+                    # Parallel processing - INCREASED for better concurrency
+                    "workers": 12,
+                    "ray_workers": 12,
+                    "max_parallel_pages": 50,
+
+                    # GPU memory optimization - use more available memory
+                    "gpu_memory_fraction": 0.90,
+                    "force_gpu": True,
+                    "cuda_device": 0,
+
+                    # Mixed precision and optimization flags
+                    "use_fp16": True,
+                    "pin_memory": True,
+                    "persistent_workers": True,
+                    "prefetch_factor": 4,
+
+                    # OCR optimizations - maximize GPU throughput
+                    "ocr_all_pages": True,
+                    "disable_ocr": False,
+                    "ocr_error_detection": False,
+                    "detect_language": False,
+
+                    # Processing optimizations - reduce CPU bottlenecks
+                    "paginate_output": False,
+                    "disable_image_extraction": True,
+                    "skip_table_detection": False,
+                    "disable_math_detection": False,
+
+                    # Other optimizations
+                    # "use_llm": True,  # Keep LLM for quality
+                    # "langs": ["en"],  # Skip language detection
+                    # "full_document_analysis": True,  # Process entire document
+                }
+                logger.info(f"Using LARGE document config: batch_multiplier={config['batch_multiplier']}, max_parallel_pages={config['max_parallel_pages']}")
             
             config_parser = ConfigParser(config)
             
@@ -471,7 +546,7 @@ class DocumentProcessor:
             
             # Convert PDF to markdown
             logger.info(f"Converting {file_path} with optimized GPU acceleration...")
-            logger.info(f"Settings: batch_multiplier=24, ocr_batch_size=128, workers=12, max_parallel_pages=16")
+            logger.info(f"Settings: batch_multiplier={config['batch_multiplier']}, ocr_batch_size={config['ocr_batch_size']}, workers={config['workers']}, max_parallel_pages={config['max_parallel_pages']}")
             start_time = time.perf_counter()
             
             # Run conversion
