@@ -282,11 +282,26 @@ async def webhook_callback(callback_data: WebhookCallbackRequest):
         request_id = callback_data.request_id
         logger.info(f"Received webhook callback for request_id: {request_id}")
 
+        # Parse markdown content - extract only markdown field if it's a JSON response
+        markdown_content = callback_data.markdown_content
+        if markdown_content and isinstance(markdown_content, str):
+            try:
+                # Try to parse as JSON (datalab.to response)
+                import json
+                parsed_data = json.loads(markdown_content)
+                if isinstance(parsed_data, dict) and 'markdown' in parsed_data:
+                    # Extract only the markdown field from datalab.to response
+                    markdown_content = parsed_data['markdown']
+                    logger.info(f"Extracted markdown field from JSON response ({len(markdown_content)} chars)")
+            except (json.JSONDecodeError, TypeError):
+                # If not JSON, use the content as-is
+                pass
+
         # Use the webhook manager to process the callback
         success = webhook_manager.process_callback(
             request_id=request_id,
             success=callback_data.success,
-            markdown_content=callback_data.markdown_content,
+            markdown_content=markdown_content,
             extracted_data=callback_data.extracted_data
         )
 
