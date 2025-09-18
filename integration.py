@@ -408,7 +408,7 @@ class DocumentProcessor:
             # Optimized GPU configuration for Tesla T4 (15GB VRAM) on GCP
             config = {
                 # GPU optimization - DOUBLED batch sizes for 95%+ GPU utilization
-                "batch_multiplier": 50,  # Doubled from 12
+                "batch_multiplier": 24,  # Doubled from 12
                 "ocr_batch_size": 128,  # Doubled from 64
                 "layout_batch_size": 32,  # Doubled from 16
                 "table_rec_batch_size": 32,  # Doubled from 16
