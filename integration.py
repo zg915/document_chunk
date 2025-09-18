@@ -60,6 +60,129 @@ logger = logging.getLogger(__name__)
 load_dotenv('.env')
 
 
+class WebhookManager:
+    """Manages webhook-based document processing requests and callbacks."""
+
+    def __init__(self):
+        """Initialize the webhook manager."""
+        self.pending_requests = {}
+        self.logger = logging.getLogger(f"{__name__}.WebhookManager")
+
+    def create_request(self, request_id: str, webhook_url: str) -> asyncio.Future:
+        """
+        Create a new webhook request and return a future for the result.
+
+        Args:
+            request_id: Unique identifier for the request
+            webhook_url: URL for webhook callbacks
+
+        Returns:
+            asyncio.Future object that will be resolved when webhook callback is received
+        """
+        future = asyncio.Future()
+
+        self.pending_requests[request_id] = {
+            "request_id": request_id,
+            "webhook_url": webhook_url,
+            "future": future,
+            "created_at": time.time()
+        }
+
+        self.logger.info(f"Created webhook request: {request_id}")
+        return future
+
+    def process_callback(self, request_id: str, success: bool,
+                         markdown_content: Optional[str] = None,
+                         extracted_data: Optional[Dict] = None,
+                         error_message: Optional[str] = None) -> bool:
+        """
+        Process an incoming webhook callback.
+
+        Args:
+            request_id: The request ID from the callback
+            success: Whether the processing was successful
+            markdown_content: The converted markdown content (if successful)
+            extracted_data: Additional extracted data (if any)
+            error_message: Error message (if failed)
+
+        Returns:
+            True if callback was processed, False if request_id not found
+        """
+        if request_id not in self.pending_requests:
+            self.logger.warning(f"Received callback for unknown request_id: {request_id}")
+            return False
+
+        webhook_request = self.pending_requests[request_id]
+        future = webhook_request["future"]
+
+        try:
+            if success and markdown_content:
+                result = {
+                    "success": True,
+                    "markdown_content": markdown_content,
+                    "extracted_data": extracted_data or {}
+                }
+                future.set_result(result)
+                self.logger.info(f"Successfully processed webhook callback for request_id: {request_id}")
+            else:
+                result = {
+                    "success": False,
+                    "error": error_message or "Webhook callback indicated failure"
+                }
+                future.set_result(result)
+                self.logger.warning(f"Webhook callback failed for request_id: {request_id}")
+
+            # Clean up the pending request
+            del self.pending_requests[request_id]
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error processing webhook callback for {request_id}: {e}")
+            if not future.done():
+                future.set_exception(e)
+            return False
+
+    def cleanup_timeout_requests(self, timeout_seconds: int = 300):
+        """
+        Clean up requests that have timed out.
+
+        Args:
+            timeout_seconds: Maximum age of requests before cleanup (default: 5 minutes)
+        """
+        current_time = time.time()
+        timeout_requests = []
+
+        for request_id, request_data in self.pending_requests.items():
+            if current_time - request_data["created_at"] > timeout_seconds:
+                timeout_requests.append(request_id)
+
+        for request_id in timeout_requests:
+            request_data = self.pending_requests[request_id]
+            future = request_data["future"]
+
+            if not future.done():
+                future.set_exception(asyncio.TimeoutError(f"Webhook request {request_id} timed out"))
+
+            del self.pending_requests[request_id]
+            self.logger.warning(f"Cleaned up timed out request: {request_id}")
+
+        if timeout_requests:
+            self.logger.info(f"Cleaned up {len(timeout_requests)} timed out webhook requests")
+
+    def get_pending_count(self) -> int:
+        """Get the number of pending webhook requests."""
+        return len(self.pending_requests)
+
+
+# Global webhook manager instance
+_webhook_manager = WebhookManager()
+
+
+def get_webhook_manager() -> WebhookManager:
+    """Get the global webhook manager instance."""
+    return _webhook_manager
+
+
 # Configuration
 class Config:
     """Configuration settings for the document processor."""
@@ -133,19 +256,20 @@ class DocumentProcessor:
             logger.error(f"Failed to convert image to PDF: {e}")
             raise
     
-    def _upload_to_marker(self, file_path: str) -> Optional[Dict]:
+    async def _upload_to_marker(self, file_path: str, webhook_url: str) -> Optional[str]:
         """
-        Upload a file to the Marker API for processing.
-        
+        Upload a file to the Marker API for processing using webhook.
+
         Args:
             file_path: Path to the file to upload
-            
+            webhook_url: URL for webhook callback
+
         Returns:
-            API response or None if failed
+            Markdown content or None if failed
         """
         file_ext = os.path.splitext(file_path)[1].lower()
         temp_file_created = False
-        
+
         try:
             if file_ext == '.pdf':
                 mime_type = 'application/pdf'
@@ -169,64 +293,61 @@ class DocumentProcessor:
             else:
                 logger.error(f"Unsupported file format: {file_ext}")
                 return None
-            
+
             with open(process_path, 'rb') as f:
                 files = {'file': (os.path.basename(process_path), f, mime_type)}
+
+                # Add webhook parameters to the request
+                data = {**Config.MARKER_PARAMS}
+
                 response = requests.post(
-                    self.api_url, 
-                    headers=self.headers, 
-                    files=files, 
-                    data=Config.MARKER_PARAMS
+                    self.api_url,
+                    headers=self.headers,
+                    files=files,
+                    data=data
                 )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
+
+            if response.status_code != 200:
                 logger.error(f"API request failed with status {response.status_code}: {response.text}")
                 return None
-                
+
+            # Get the request_id from the response
+            result = response.json()
+            request_id = result.get('request_id')
+            if not request_id:
+                logger.error("No request_id returned from Marker API")
+                return None
+
+            logger.info(f"File uploaded successfully with request_id: {request_id}")
+
+            # Get webhook manager and create request with the actual request_id
+            webhook_mgr = get_webhook_manager()
+            future = webhook_mgr.create_request(request_id, webhook_url)
+
+            # Wait for webhook callback
+            try:
+                webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
+                markdown_content = webhook_result.get("markdown_content")
+
+                if not markdown_content:
+                    logger.error("Webhook returned empty content")
+                    return None
+
+                return markdown_content
+
+            except asyncio.TimeoutError:
+                logger.error("Webhook processing timed out")
+                return None
+
         except Exception as e:
             logger.error(f"Upload failed: {e}")
             return None
-            
+
         finally:
             if temp_file_created and os.path.exists(process_path):
                 os.unlink(process_path)
                 logger.debug(f"Cleaned up temporary file: {process_path}")
     
-    def _wait_for_processing(self, check_url: str) -> Optional[str]:
-        """
-        Wait for asynchronous processing to complete.
-        
-        Args:
-            check_url: URL to check processing status
-            
-        Returns:
-            Markdown content or None if failed
-        """
-        for attempt in range(Config.MAX_RETRIES):
-            try:
-                response = requests.get(check_url, headers=self.headers)
-                if response.status_code == 200:
-                    result = response.json()
-                    status = result.get('status', 'unknown')
-                    
-                    if status in ['completed', 'complete']:
-                        logger.info("Processing completed successfully")
-                        return result.get('markdown')
-                    elif status == 'failed':
-                        logger.error("Processing failed on server")
-                        return None
-                    else:
-                        logger.debug(f"Processing status: {status} (attempt {attempt + 1}/{Config.MAX_RETRIES})")
-                        
-            except Exception as e:
-                logger.error(f"Error checking status: {e}")
-            
-            time.sleep(Config.RETRY_DELAY)
-        
-        logger.error("Processing timed out")
-        return None
     
     def _process_with_local_marker(self, file_path: str) -> Optional[str]:
         """
@@ -343,24 +464,26 @@ class DocumentProcessor:
             return None
 
 
-def convert_to_markdown(
+async def convert_to_markdown(
     file_path: str,
     save_to_file: Optional[bool] = False,
     output_path: Optional[str] = None,
-    use_local: Optional[bool] = None
+    use_local: Optional[bool] = None,
+    webhook_url: Optional[str] = None
 ) -> Optional[str]:
     """
     Convert a PDF or image file to markdown format.
-    
+
     Args:
         file_path: Path to the input file (PDF or supported image format)
         save_to_file: Whether to save the markdown to a file
         output_path: Optional custom output path (defaults to input_name.md)
         use_local: Whether to use local Marker (True) or API (False). Defaults to True.
-        
+        webhook_url: URL for webhook callback (required if use_local is False)
+
     Returns:
         Markdown content as string, or None if conversion failed
-        
+
     Raises:
         FileNotFoundError: If the input file doesn't exist
         ValueError: If the file format is not supported
@@ -368,63 +491,53 @@ def convert_to_markdown(
     # Validate input
     file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
     file_path = os.path.abspath(file_path)
-    
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    
+
     file_ext = os.path.splitext(file_path)[1].lower()
     if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
-    
+
     # Process file
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
-    
+
     # Default to local processing if use_local is not specified
     if use_local is None:
         use_local = True
-    
+
     # Choose between local and API processing
     if use_local:
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
-        
+
         # If local processing fails, raise error instead of fallback
         if markdown_content is None:
             raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
     else:
-        logger.info("Using Marker API for processing")
-        # Upload and get initial response
-        result = processor._upload_to_marker(file_path)
-        if not result:
+        if not webhook_url:
+            raise ValueError("webhook_url is required when use_local is False")
+
+        logger.info("Using Marker API with webhook for processing")
+        # Upload and wait for webhook response
+        markdown_content = await processor._upload_to_marker(file_path, webhook_url)
+        if not markdown_content:
             return None
-        
-        # Check if processing is complete or async
-        if result.get('success'):
-            if 'markdown' in result and result['markdown']:
-                markdown_content = result['markdown']
-            elif 'request_check_url' in result:
-                markdown_content = processor._wait_for_processing(result['request_check_url'])
-            else:
-                logger.error("Unexpected API response format")
-                return None
-        else:
-            logger.error(f"API returned error: {result.get('error', 'Unknown error')}")
-            return None
-    
+
     if not markdown_content:
         return None
-    
+
     # Save to file if requested
     if save_to_file:
         if output_path is None:
             output_path = Path(file_path).with_suffix('.md')
         else:
             output_path = Path(output_path)
-            
+
         output_path.write_text(markdown_content, encoding='utf-8')
         logger.info(f"Saved markdown to: {output_path}")
-    
+
     return markdown_content
 
 
@@ -942,7 +1055,6 @@ def save_document_to_weaviate(
     logger.info(f"Saved document '{file_name}' to Weaviate with UUID: {document_id}")
     return document_id
 
-
 def save_chunks_to_weaviate(
     client,
     chunks: List[Dict],
@@ -1138,11 +1250,12 @@ def _get_weaviate_client(
             logger.error(f"Failed to connect to Weaviate: {e2}")
             raise
 
-def process_document_to_weaviate(
+async def process_document_to_weaviate(
     file_path: str,
     document_id: str,
     tenant_id: str,
     use_local: Optional[bool] = True,
+    webhook_url: Optional[str] = None,
     client: Optional[object] = None,
     save_markdown: bool = False,
     save_chunks_json: bool = False,
@@ -1192,11 +1305,12 @@ def process_document_to_weaviate(
         if save_markdown and output_dir:
             markdown_path = os.path.join(output_dir, f"{Path(file_path).stem}.md")
         
-        markdown_content = convert_to_markdown(
+        markdown_content = await convert_to_markdown(
             file_path=file_path,
             save_to_file=save_markdown,
             output_path=markdown_path,
-            use_local=use_local
+            use_local=use_local,
+            webhook_url=webhook_url
         )
         
         if not markdown_content:
@@ -1396,134 +1510,4 @@ def fast_doc_to_weaviate(
                 logger.warning(f"Error closing Weaviate connection: {e}")
 
 
-def convert_to_markdown_with_webhook(
-    file_path: str,
-    webhook_url: str,
-    request_id: str,
-    save_to_file: Optional[bool] = False,
-    output_path: Optional[str] = None,
-    timeout: int = 300
-) -> Optional[str]:
-    """
-    Convert a PDF or image file to markdown using webhook instead of polling.
-    
-    Args:
-        file_path: Path to the input file (PDF or supported image format)
-        webhook_url: URL where webhook should send results
-        request_id: Unique request identifier
-        save_to_file: Whether to save the markdown to a file
-        output_path: Optional custom output path (defaults to input_name.md)
-        timeout: Maximum time to wait for webhook response (seconds)
-        
-    Returns:
-        Markdown content as string, or None if conversion failed
-        
-    Raises:
-        FileNotFoundError: If the input file doesn't exist
-        ValueError: If the file format is not supported
-        TimeoutError: If webhook doesn't respond within timeout
-    """
-    # Validate input
-    file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
-    file_path = os.path.abspath(file_path)
-    
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-    
-    file_ext = os.path.splitext(file_path)[1].lower()
-    if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
-        raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
-    
-    # Create processor
-    processor = DocumentProcessor()
-    logger.info(f"Processing file with webhook: {file_path} (request_id: {request_id})")
-    
-    # Upload file to datalab with webhook URL
-    result = processor._upload_to_marker_with_webhook(file_path, webhook_url, request_id)
-    if not result:
-        logger.error("Failed to upload file to datalab")
-        return None
-    
-    # For now, return None to indicate this needs to be integrated
-    # with the API server's webhook handling system
-    logger.info(f"File uploaded to datalab with request_id: {request_id}. Waiting for webhook callback...")
-    return None
 
-
-def _upload_to_marker_with_webhook(self, file_path: str, webhook_url: str, request_id: str) -> Optional[Dict]:
-    """
-    Upload a file to the Marker API with webhook configuration.
-    
-    Args:
-        file_path: Path to the file to upload
-        webhook_url: URL where webhook should send results
-        request_id: Unique request identifier
-        
-    Returns:
-        API response or None if failed
-    """
-    file_ext = os.path.splitext(file_path)[1].lower()
-    temp_file_created = False
-    
-    try:
-        if file_ext == '.pdf':
-            mime_type = 'application/pdf'
-            process_path = file_path
-        elif file_ext in Config.SUPPORTED_IMAGE_FORMATS:
-            mime_type = 'application/pdf'
-            process_path = self._convert_image_to_pdf(file_path)
-            temp_file_created = True
-        elif file_ext in Config.SUPPORTED_WORD_FORMATS:
-            if file_ext == '.docx':
-                mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            else:  # .doc
-                mime_type = 'application/msword'
-            process_path = file_path
-        elif file_ext in Config.SUPPORTED_EXCEL_FORMATS:
-            if file_ext == '.xlsx':
-                mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            else:  # .xls
-                mime_type = 'application/vnd.ms-excel'
-            process_path = file_path
-        else:
-            logger.error(f"Unsupported file format: {file_ext}")
-            return None
-        
-        with open(process_path, 'rb') as f:
-            files = {'file': (os.path.basename(process_path), f, mime_type)}
-            
-            # Add webhook parameters to the request
-            data = {
-                **Config.MARKER_PARAMS,
-                'webhook_url': webhook_url,
-                'request_id': request_id
-            }
-            
-            response = requests.post(
-                self.api_url, 
-                headers=self.headers, 
-                files=files, 
-                data=data
-            )
-        
-        if response.status_code == 200:
-            result = response.json()
-            logger.info(f"File uploaded successfully with request_id: {request_id}")
-            return result
-        else:
-            logger.error(f"API request failed with status {response.status_code}: {response.text}")
-            return None
-            
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        return None
-        
-    finally:
-        if temp_file_created and os.path.exists(process_path):
-            os.unlink(process_path)
-            logger.debug(f"Cleaned up temporary file: {process_path}")
-
-# Add the method to DocumentProcessor class
-DocumentProcessor._upload_to_marker_with_webhook = _upload_to_marker_with_webhook
-
-    

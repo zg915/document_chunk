@@ -26,7 +26,7 @@ from pydantic import BaseModel
 import uvicorn
 
 # Import our document processing functions
-# Add one more import 
+# Add one more import
 from integration import (
     convert_to_markdown,
     process_document_to_weaviate,
@@ -35,15 +35,15 @@ from integration import (
     chunk_markdown,
     fast_convert_to_markdown,
     fast_doc_to_weaviate,
-    convert_to_markdown_with_webhook
+    get_webhook_manager
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Store pending webhook requests
-pending_webhook_requests = {}
+# Get the webhook manager instance from integration module
+webhook_manager = get_webhook_manager()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -176,31 +176,22 @@ async def webhook_callback(callback_data: WebhookCallbackRequest):
     try:
         request_id = callback_data.request_id
         logger.info(f"Received webhook callback for request_id: {request_id}")
-        
-        if request_id in pending_webhook_requests:
-            webhook_request = pending_webhook_requests[request_id]
-            
-            # Set the result in the future
-            if callback_data.success and callback_data.markdown_content:
-                webhook_request["future"].set_result({
-                    "success": True,
-                    "markdown_content": callback_data.markdown_content,
-                    "extracted_data": callback_data.extracted_data
-                })
-            else:
-                webhook_request["future"].set_result({
-                    "success": False,
-                    "error": "Webhook callback indicated failure"
-                })
-            
-            # Clean up
-            del pending_webhook_requests[request_id]
+
+        # Use the webhook manager to process the callback
+        success = webhook_manager.process_callback(
+            request_id=request_id,
+            success=callback_data.success,
+            markdown_content=callback_data.markdown_content,
+            extracted_data=callback_data.extracted_data
+        )
+
+        if success:
             logger.info(f"Processed webhook callback for request_id: {request_id}")
+            return {"success": True, "message": "Callback processed"}
         else:
             logger.warning(f"Received callback for unknown request_id: {request_id}")
-        
-        return {"success": True, "message": "Callback processed"}
-        
+            return {"success": False, "error": "Unknown request_id"}
+
     except Exception as e:
         logger.error(f"Error processing webhook callback: {e}")
         return {"success": False, "error": str(e)}
@@ -210,7 +201,6 @@ async def webhook_callback(callback_data: WebhookCallbackRequest):
 async def convert_doc_to_markdown(
     file: UploadFile = File(...),
     use_local: bool = Query(True),
-    use_webhook: bool = Query(False),
     webhook_url: Optional[str] = Query(None)
 ):
     """Convert an uploaded PDF or image file to markdown format."""
@@ -218,69 +208,23 @@ async def convert_doc_to_markdown(
     try:
         validate_file_format(file.filename, SUPPORTED_FORMATS)
         temp_file_path = await save_uploaded_file(file)
-        
-        # Use webhook-based conversion if requested
-        if use_webhook and webhook_url:
-            # Generate request ID and store pending request
-            request_id = str(uuid.uuid4())
-            future = asyncio.Future()
-            
-            # Store the pending request
-            pending_webhook_requests[request_id] = {
-                "request_id": request_id,
-                "file_path": temp_file_path,
-                "webhook_url": webhook_url,
-                "future": future
-            }
-            
-            # Upload file to datalab with webhook
-            from integration import DocumentProcessor
-            processor = DocumentProcessor()
-            result = processor._upload_to_marker_with_webhook(temp_file_path, webhook_url, request_id)
-            
-            if not result:
-                raise ValueError("Failed to upload file to datalab")
-            
-            # Extract the datalab request_id from the response
-            datalab_request_id = result.get('request_id') or result.get('id')
-            if not datalab_request_id:
-                raise ValueError("No request_id returned from datalab")
-            
-            # Update the pending request to use datalab request_id
-            if datalab_request_id != request_id:
-                pending_webhook_requests[datalab_request_id] = pending_webhook_requests.pop(request_id)
-                pending_webhook_requests[datalab_request_id]["request_id"] = datalab_request_id
-                logger.info(f"Updated pending request to use datalab request_id: {datalab_request_id}")
-            
-            # Wait for webhook callback
-            try:
-                webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
-                markdown_content = webhook_result.get("markdown_content")
-                
-                if not markdown_content:
-                    raise ValueError("Webhook returned empty content")
-                    
-            except asyncio.TimeoutError:
-                # Clean up pending request
-                if datalab_request_id in pending_webhook_requests:
-                    del pending_webhook_requests[datalab_request_id]
-                raise ValueError("Webhook timeout - no response received")
-        else:
-            # Use traditional conversion
-            markdown_content = convert_to_markdown(
-                file_path=temp_file_path,
-                use_local=use_local
-            )
-        
+
+        # Use the unified convert_to_markdown function
+        markdown_content = await convert_to_markdown(
+            file_path=temp_file_path,
+            use_local=use_local,
+            webhook_url=webhook_url
+        )
+
         if not markdown_content:
             raise ValueError("Conversion failed")
-        
+
         return ConvertToMarkdownResponse(
             success=True,
             markdown_content=markdown_content,
             message="Document converted successfully"
         )
-        
+
     except Exception as e:
         logger.error(f"Conversion error: {e}")
         return ConvertToMarkdownResponse(
@@ -291,78 +235,6 @@ async def convert_doc_to_markdown(
     finally:
         cleanup_temp_file(temp_file_path)
 
-# Webhook-based convert PDF/image to markdown
-@app.post("/convert-doc-to-markdown-webhook", response_model=ConvertToMarkdownResponse)
-async def convert_doc_to_markdown_webhook(
-    file: UploadFile = File(...),
-    webhook_url: str = Query(...)
-):
-    """Convert an uploaded PDF or image file to markdown using webhook."""
-    temp_file_path = None
-    try:
-        validate_file_format(file.filename, SUPPORTED_FORMATS)
-        temp_file_path = await save_uploaded_file(file)
-        
-        # Generate request ID and create future for webhook callback
-        request_id = str(uuid.uuid4())
-        future = asyncio.Future()
-        
-        # Store the pending request
-        pending_webhook_requests[request_id] = {
-            "request_id": request_id,
-            "file_path": temp_file_path,
-            "webhook_url": webhook_url,
-            "future": future
-        }
-        
-        # Upload file to datalab with webhook
-        from integration import DocumentProcessor
-        processor = DocumentProcessor()
-        result = processor._upload_to_marker_with_webhook(temp_file_path, webhook_url, request_id)
-        
-        if not result:
-            raise ValueError("Failed to upload file to datalab")
-        
-        # Extract the datalab request_id from the response
-        datalab_request_id = result.get('request_id') or result.get('id')
-        if not datalab_request_id:
-            raise ValueError("No request_id returned from datalab")
-        
-        # Update the pending request to use datalab request_id
-        if datalab_request_id != request_id:
-            pending_webhook_requests[datalab_request_id] = pending_webhook_requests.pop(request_id)
-            pending_webhook_requests[datalab_request_id]["request_id"] = datalab_request_id
-            logger.info(f"Updated pending request to use datalab request_id: {datalab_request_id}")
-        
-        # Wait for webhook callback
-        try:
-            webhook_result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
-            markdown_content = webhook_result.get("markdown_content")
-            
-            if not markdown_content:
-                raise ValueError("Webhook returned empty content")
-                
-        except asyncio.TimeoutError:
-            # Clean up pending request
-            if datalab_request_id in pending_webhook_requests:
-                del pending_webhook_requests[datalab_request_id]
-            raise ValueError("Webhook timeout - no response received")
-        
-        return ConvertToMarkdownResponse(
-            success=True,
-            markdown_content=markdown_content,
-            message="Document converted successfully via webhook"
-        )
-        
-    except Exception as e:
-        logger.error(f"Webhook conversion error: {e}")
-        return ConvertToMarkdownResponse(
-            success=False,
-            message="Failed to convert document via webhook",
-            error=str(e)
-        )
-    finally:
-        cleanup_temp_file(temp_file_path)
 
 # fast convert files into markdown 
 @app.post("/fast-convert-to-markdown", response_model=ConvertToMarkdownResponse)
@@ -429,7 +301,7 @@ async def upload_and_process_document(
         
         doc_id = document_id or str(uuid.uuid4())
         
-        result = process_document_to_weaviate(
+        result = await process_document_to_weaviate(
             file_path=temp_file_path,
             document_id=doc_id,
             tenant_id=tenant_id,
