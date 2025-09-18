@@ -443,9 +443,9 @@ class DocumentProcessor:
                 "prefetch_factor": 4,  # Prefetch batches
 
                 # Other optimizations
-                "use_llm": True,  # Keep LLM for quality
-                "langs": ["en"],  # Skip language detection
-                "full_document_analysis": True,  # Process entire document
+                # "use_llm": True,  # Keep LLM for quality
+                # "langs": ["en"],  # Skip language detection
+                # "full_document_analysis": True,  # Process entire document
             }
             
             config_parser = ConfigParser(config)
