@@ -564,6 +564,13 @@ class DocumentProcessor:
                 if hasattr(torch.cuda, 'set_sync_debug_mode'):
                     torch.cuda.set_sync_debug_mode(0)  # Disable debug synchronization
 
+                # Disable torch compile if it causes issues
+                if os.getenv("DISABLE_TORCH_COMPILE", "false").lower() == "true":
+                    import torch._dynamo
+                    torch._dynamo.config.suppress_errors = True
+                    torch._dynamo.config.cache_size_limit = 1
+                    logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
+
                 logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
             
             # Convert PDF to markdown
