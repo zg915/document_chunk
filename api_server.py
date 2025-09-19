@@ -322,8 +322,7 @@ async def convert_doc_to_markdown(
     request: Request,
     file: UploadFile = File(default=None),
     url: str = Form(default=None),
-    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)"),
-    webhook_url: Optional[str] = Query(None)
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
 ):
     """
     Convert a PDF or image file to markdown format.
@@ -340,6 +339,7 @@ async def convert_doc_to_markdown(
         temp_file_path = await acquire_file(file, url)
 
         # Use the unified convert_to_markdown function with webhook support
+        webhook_url = os.getenv('WEBHOOK_URL')
         markdown_content = await convert_to_markdown(
             file_path=temp_file_path,
             use_local=use_local,
@@ -438,8 +438,7 @@ async def upload_and_process_document(
     url: str = Form(default=None),
     tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
     document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)"),
-    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)"),
-    webhook_url: Optional[str] = Query(None, description="Webhook URL for async processing callbacks")
+    use_local: bool = Query(True, description="Use local Marker processing (True) or API (False)")
 ):
     """
     Upload and process document to Weaviate.
@@ -456,6 +455,7 @@ async def upload_and_process_document(
 
         doc_id = document_id or str(uuid.uuid4())
 
+        webhook_url = os.getenv('WEBHOOK_URL')
         result = await process_document_to_weaviate(
             file_path=temp_file_path,
             document_id=doc_id,
