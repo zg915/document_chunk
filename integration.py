@@ -440,6 +440,11 @@ class DocumentProcessor:
         try:
             logger.info("Using marker Python API for GPU-optimized processing")
 
+            # Ensure torch is available for GPU operations
+            if torch is None:
+                logger.error("PyTorch not available - cannot use local Marker processing")
+                return None
+
             # Import correct marker modules according to PyPI documentation
             from marker.converters.pdf import PdfConverter
             from marker.models import create_model_dict
@@ -552,7 +557,7 @@ class DocumentProcessor:
             )
             
             # Force GPU memory optimization
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()  # Clear GPU memory
                 torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction)  # Use configured GPU memory fraction
                 torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
@@ -572,6 +577,10 @@ class DocumentProcessor:
                     logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
 
                 logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
+            elif torch is None:
+                logger.warning("PyTorch not available, skipping GPU optimizations")
+            else:
+                logger.warning("CUDA not available, skipping GPU optimizations")
             
             # Convert PDF to markdown
             logger.info(f"Converting {file_path} with optimized GPU acceleration...")
