@@ -294,7 +294,7 @@ class DocumentProcessor:
                 "detection_batch_size": 32,  # Larger detection batch
                 
                 # OCR optimizations - keep GPU busy
-                "ocr_all_pages": True,  # Process all pages in parallel
+                # "ocr_all_pages": True,  # Process all pages in parallel
                 "disable_ocr": False,  # Keep OCR but optimize
                 "ocr_error_detection": False,  # Skip for speed
                 "detect_language": False,  # Skip language detection
@@ -316,9 +316,9 @@ class DocumentProcessor:
                 "cuda_device": 0,  # Use first GPU
                 
                 # Other optimizations
-                "use_llm": True,  # Keep LLM for quality
-                "langs": ["en"],  # Skip language detection
-                "full_document_analysis": True,  # Process entire document
+                # "use_llm": True,  # Keep LLM for quality
+                # "langs": ["en"],  # Skip language detection
+                # "full_document_analysis": True,  # Process entire document
             }
             
             config_parser = ConfigParser(config)
