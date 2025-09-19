@@ -412,12 +412,12 @@ class DocumentProcessor:
 
         try:
             logger.info("Using marker Python API for GPU-optimized processing")
-            
+
             # Import correct marker modules according to PyPI documentation
             from marker.converters.pdf import PdfConverter
             from marker.models import create_model_dict
             from marker.output import text_from_rendered
-            
+
             # Use preloaded models if available
             try:
                 from preload_models import get_preloaded_models
@@ -427,101 +427,87 @@ class DocumentProcessor:
                 else:
                     logger.info("Loading models...")
                     models = create_model_dict()
-            except ImportError:
-                logger.info("Loading models...")
+            except (ImportError, Exception) as e:
+                logger.info(f"Preloaded models not available ({e}), loading fresh models...")
                 models = create_model_dict()
-            
+
             # Create optimized configuration for faster processing
             from marker.config.parser import ConfigParser
 
+            # Read environment variables for configuration with proper defaults
+            batch_multiplier = int(os.getenv("MARKER_BATCH_MULTIPLIER", 4))
+            ocr_batch_size = int(os.getenv("MARKER_OCR_BATCH_SIZE", 16))
+            layout_batch_size = int(os.getenv("MARKER_LAYOUT_BATCH_SIZE", 8))
+            table_batch_size = int(os.getenv("MARKER_TABLE_BATCH_SIZE", 8))
+            detection_batch_size = int(os.getenv("MARKER_DETECTION_BATCH_SIZE", 16))
+            max_parallel_pages = int(os.getenv("MARKER_MAX_PARALLEL_PAGES", 8))
+            workers = int(os.getenv("MARKER_WORKERS", 4))
+            ray_workers = int(os.getenv("MARKER_RAY_WORKERS", 4))
+            gpu_memory_fraction = float(os.getenv("MARKER_GPU_MEMORY_FRACTION", 0.8))
+
+            # Optional processor flags
+            skip_table_detection = os.getenv("MARKER_SKIP_TABLE_DETECTION", "false").lower() == "true"
+            disable_math_detection = os.getenv("MARKER_DISABLE_MATH_DETECTION", "false").lower() == "true"
+            disable_image_extraction = os.getenv("MARKER_DISABLE_IMAGE_EXTRACTION", "false").lower() == "true"
+
             # Count pages for dynamic configuration
             page_count = get_pdf_page_count(file_path)
-            logger.info(f"Document has {page_count} pages - applying dynamic GPU configuration")
 
-            # Dynamic GPU configuration based on document size
-            if page_count <= 20:
-                # Small document settings - avoid over-parallelization overhead
-                config = {
-                    # GPU optimization - optimized for small documents
-                    "batch_multiplier": min(4, page_count),
-                    "ocr_batch_size": 32,
-                    "layout_batch_size": 16,
-                    "table_rec_batch_size": 16,
-                    "detection_batch_size": 32,
+            # Build configuration dictionary
+            config = {
+                # GPU optimization - using environment variables
+                "batch_multiplier": batch_multiplier,
+                "ocr_batch_size": ocr_batch_size,
+                "layout_batch_size": layout_batch_size,
+                "table_rec_batch_size": table_batch_size,
+                "detection_batch_size": detection_batch_size,
 
-                    # Parallel processing - minimal for small docs
-                    "workers": 4,
-                    "ray_workers": 4,
-                    "max_parallel_pages": min(8, page_count),
+                # Parallel processing
+                "workers": workers,
+                "ray_workers": ray_workers,
+                "max_parallel_pages": min(max_parallel_pages, page_count),
 
-                    # GPU memory optimization
-                    "gpu_memory_fraction": 0.75,
-                    "force_gpu": True,
-                    "cuda_device": 0,
+                # GPU memory optimization
+                "gpu_memory_fraction": gpu_memory_fraction,
+                "force_gpu": True,
+                "cuda_device": 0,
 
-                    # Mixed precision and optimization flags
-                    "use_fp16": True,
-                    "pin_memory": True,
-                    "persistent_workers": False,  # Don't persist for small docs
-                    "prefetch_factor": 2,
+                # Mixed precision and optimization flags
+                "use_fp16": True,
+                "pin_memory": True,
+                "persistent_workers": page_count > 20,  # Auto-optimize based on doc size
+                "prefetch_factor": 2,
 
-                    # OCR optimizations
-                    # "ocr_all_pages": True,
-                    "disable_ocr": False,
-                    "ocr_error_detection": False,
-                    "detect_language": False,
+                # OCR optimizations
+                "disable_ocr": False,
+                "ocr_error_detection": False,
+                "detect_language": False,
 
-                    # Processing optimizations
-                    "paginate_output": False,
-                    "disable_image_extraction": True,
-                    "skip_table_detection": False,
-                    "disable_math_detection": False,
-                }
-                logger.info(f"Using SMALL document config: batch_multiplier={config['batch_multiplier']}, max_parallel_pages={config['max_parallel_pages']}")
-            else:
-                # Large document settings - maximize GPU utilization
-                config = {
-                    # GPU optimization - DOUBLED batch sizes for 95%+ GPU utilization
-                    "batch_multiplier": 50,  # Optimized for large docs
-                    "ocr_batch_size": 128,
-                    "layout_batch_size": 32,
-                    "table_rec_batch_size": 32,
-                    "detection_batch_size": 64,
+                # Processing optimizations - controlled by environment variables
+                "paginate_output": False,
+                "disable_image_extraction": disable_image_extraction,
+                "skip_table_detection": skip_table_detection,
+                "disable_math_detection": disable_math_detection,
+            }
 
-                    # Parallel processing - INCREASED for better concurrency
-                    "workers": 12,
-                    "ray_workers": 12,
-                    "max_parallel_pages": 50,
-
-                    # GPU memory optimization - use more available memory
-                    "gpu_memory_fraction": 0.90,
-                    "force_gpu": True,
-                    "cuda_device": 0,
-
-                    # Mixed precision and optimization flags
-                    "use_fp16": True,
-                    "pin_memory": True,
-                    "persistent_workers": True,
-                    "prefetch_factor": 4,
-
-                    # OCR optimizations - maximize GPU throughput
-                    # "ocr_all_pages": True,
-                    "disable_ocr": False,
-                    "ocr_error_detection": False,
-                    "detect_language": False,
-
-                    # Processing optimizations - reduce CPU bottlenecks
-                    "paginate_output": False,
-                    "disable_image_extraction": True,
-                    "skip_table_detection": False,
-                    "disable_math_detection": False,
-
-                    # Other optimizations
-                    # "use_llm": True,  # Keep LLM for quality
-                    # "langs": ["en"],  # Skip language detection
-                    # "full_document_analysis": True,  # Process entire document
-                }
-                logger.info(f"Using LARGE document config: batch_multiplier={config['batch_multiplier']}, max_parallel_pages={config['max_parallel_pages']}")
+            # Log configuration summary
+            logger.info("=" * 60)
+            logger.info("Marker Configuration Summary:")
+            logger.info(f"  Document: {page_count} pages")
+            logger.info(f"  Batch Multiplier: {batch_multiplier}")
+            logger.info(f"  OCR Batch Size: {ocr_batch_size}")
+            logger.info(f"  Layout Batch Size: {layout_batch_size}")
+            logger.info(f"  Table Batch Size: {table_batch_size}")
+            logger.info(f"  Detection Batch Size: {detection_batch_size}")
+            logger.info(f"  Max Parallel Pages: {config['max_parallel_pages']}/{max_parallel_pages}")
+            logger.info(f"  Workers: {workers}")
+            logger.info(f"  Ray Workers: {ray_workers}")
+            logger.info(f"  GPU Memory Fraction: {gpu_memory_fraction}")
+            logger.info(f"  Skip Table Detection: {skip_table_detection}")
+            logger.info(f"  Disable Math Detection: {disable_math_detection}")
+            logger.info(f"  Disable Image Extraction: {disable_image_extraction}")
+            logger.info(f"  Persistent Workers: {config['persistent_workers']}")
+            logger.info("=" * 60)
             
             config_parser = ConfigParser(config)
             
@@ -531,22 +517,23 @@ class DocumentProcessor:
                 config=config_parser.generate_config_dict()
             )
             
-            # Force GPU memory optimization - ENHANCED for GCP
+            # Force GPU memory optimization
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()  # Clear GPU memory
-                torch.cuda.set_per_process_memory_fraction(0.90)  # Use 90% of GPU memory (increased)
+                torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction)  # Use configured GPU memory fraction
                 torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
                 torch.backends.cuda.matmul.allow_tf32 = True  # Use TensorFloat-32
                 torch.backends.cudnn.allow_tf32 = True  # Use TensorFloat-32
 
-                # Additional optimizations for GCP
+                # Additional optimizations
                 torch.set_float32_matmul_precision('high')  # Optimize matrix multiplication
                 if hasattr(torch.cuda, 'set_sync_debug_mode'):
                     torch.cuda.set_sync_debug_mode(0)  # Disable debug synchronization
+
+                logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
             
             # Convert PDF to markdown
             logger.info(f"Converting {file_path} with optimized GPU acceleration...")
-            logger.info(f"Settings: batch_multiplier={config['batch_multiplier']}, ocr_batch_size={config['ocr_batch_size']}, workers={config['workers']}, max_parallel_pages={config['max_parallel_pages']}")
             start_time = time.perf_counter()
             
             # Run conversion
