@@ -42,6 +42,17 @@ services:
       - NUMEXPR_MAX_THREADS=1
       - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     restart: unless-stopped
+    depends_on:
+      - webhook
+
+  webhook:
+    build: ./webhook
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - API_CALLBACK_URL=http://document-api:8001/api-callback
+    restart: unless-stopped
 
 volumes:
   marker_cache:
