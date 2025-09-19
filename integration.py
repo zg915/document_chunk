@@ -34,6 +34,38 @@ except Exception as e:
     print(f"GPU optimizations failed, continuing without: {e}")
     torch = None
 
+# Import Marker components at module level (only if GPU enabled)
+try:
+    if os.getenv("GPU_ENABLED", "false").lower() == "true" and torch is not None:
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+        from marker.output import text_from_rendered
+        from marker.config.parser import ConfigParser
+        MARKER_AVAILABLE = True
+        print("Marker modules loaded at startup")
+
+        # Also try to import preload_models functions
+        try:
+            from preload_models import get_preloaded_models
+            print("Preload models module available")
+        except ImportError:
+            get_preloaded_models = None
+    else:
+        MARKER_AVAILABLE = False
+        PdfConverter = None
+        create_model_dict = None
+        text_from_rendered = None
+        ConfigParser = None
+        get_preloaded_models = None
+except ImportError as e:
+    print(f"Marker modules not available: {e}")
+    MARKER_AVAILABLE = False
+    PdfConverter = None
+    create_model_dict = None
+    text_from_rendered = None
+    ConfigParser = None
+    get_preloaded_models = None
+
 
 import requests
 import tiktoken
@@ -440,51 +472,34 @@ class DocumentProcessor:
         try:
             logger.info("Using marker Python API for GPU-optimized processing")
 
-            # Ensure torch is available for GPU operations (declare as global to avoid scoping issues)
-            global torch
+            # Check if Marker is available
+            if not MARKER_AVAILABLE or PdfConverter is None:
+                logger.error("Marker modules not available - cannot use local processing")
+                return None
+
+            # Ensure torch is available for GPU operations
             if torch is None:
                 logger.error("PyTorch not available - cannot use local Marker processing")
                 return None
 
-            # Import correct marker modules according to PyPI documentation
-            from marker.converters.pdf import PdfConverter
-            from marker.models import create_model_dict
-            from marker.output import text_from_rendered
-
             # Use preloaded models if available
-            try:
-                from preload_models import get_preloaded_models
-                models = get_preloaded_models()
-                if models:
-                    logger.info(f"✅ Using {len(models)} preloaded models")
-                else:
-                    logger.info("Loading models...")
-                    models = create_model_dict()
-            except (ImportError, Exception) as e:
-                logger.info(f"Preloaded models not available ({e}), loading fresh models...")
+            models = None
+            if get_preloaded_models is not None:
+                try:
+                    models = get_preloaded_models()
+                    if models:
+                        logger.info(f"✅ Using {len(models)} preloaded models")
+                except Exception as e:
+                    logger.info(f"Could not get preloaded models: {e}")
+
+            # If no preloaded models, create new ones
+            if models is None:
+                logger.info("Loading models fresh...")
                 models = create_model_dict()
 
-            # Create optimized configuration for faster processing
-            from marker.config.parser import ConfigParser
+           
 
-            # Read environment variables for configuration with proper defaults
-            batch_multiplier = int(os.getenv("MARKER_BATCH_MULTIPLIER", 4))
-            ocr_batch_size = int(os.getenv("MARKER_OCR_BATCH_SIZE", 16))
-            layout_batch_size = int(os.getenv("MARKER_LAYOUT_BATCH_SIZE", 8))
-            table_batch_size = int(os.getenv("MARKER_TABLE_BATCH_SIZE", 8))
-            detection_batch_size = int(os.getenv("MARKER_DETECTION_BATCH_SIZE", 16))
-            max_parallel_pages = int(os.getenv("MARKER_MAX_PARALLEL_PAGES", 8))
-            workers = int(os.getenv("MARKER_WORKERS", 4))
-            ray_workers = int(os.getenv("MARKER_RAY_WORKERS", 4))
-            gpu_memory_fraction = float(os.getenv("MARKER_GPU_MEMORY_FRACTION", 0.8))
-
-            # Optional processor flags
-            skip_table_detection = os.getenv("MARKER_SKIP_TABLE_DETECTION", "false").lower() == "true"
-            disable_math_detection = os.getenv("MARKER_DISABLE_MATH_DETECTION", "false").lower() == "true"
-            disable_image_extraction = os.getenv("MARKER_DISABLE_IMAGE_EXTRACTION", "false").lower() == "true"
-
-            # Worker persistence control
-            persistent_workers_env = os.getenv("MARKER_PERSISTENT_WORKERS", "auto").lower()
+          
 
             # Count pages for dynamic configuration
             page_count = get_pdf_page_count(file_path)
@@ -492,30 +507,26 @@ class DocumentProcessor:
             # Build configuration dictionary
             config = {
                 # GPU optimization - using environment variables
-                "batch_multiplier": batch_multiplier,
-                "ocr_batch_size": ocr_batch_size,
-                "layout_batch_size": layout_batch_size,
-                "table_rec_batch_size": table_batch_size,
-                "detection_batch_size": detection_batch_size,
+                "batch_multiplier": 4,
+                "ocr_batch_size": 16,
+                "layout_batch_size": 8,
+                "table_rec_batch_size": 8,
+                "detection_batch_size": 16,
 
                 # Parallel processing
-                "workers": workers,
-                "ray_workers": ray_workers,
-                "max_parallel_pages": min(max_parallel_pages, page_count),
+                "workers": 4,
+                "ray_workers":4,
+                "max_parallel_pages": 12,
 
                 # GPU memory optimization
-                "gpu_memory_fraction": gpu_memory_fraction,
+                "gpu_memory_fraction": 0.8,
                 "force_gpu": True,
                 "cuda_device": 0,
 
                 # Mixed precision and optimization flags
                 "use_fp16": True,
                 "pin_memory": True,
-                "persistent_workers": (
-                    True if persistent_workers_env == "true" else
-                    False if persistent_workers_env == "false" else
-                    page_count > 10  # Auto: enable for docs > 10 pages (was 20)
-                ),
+        
                 "prefetch_factor": 2,
 
                 # OCR optimizations
@@ -525,9 +536,9 @@ class DocumentProcessor:
 
                 # Processing optimizations - controlled by environment variables
                 "paginate_output": False,
-                "disable_image_extraction": disable_image_extraction,
-                "skip_table_detection": skip_table_detection,
-                "disable_math_detection": disable_math_detection,
+                "disable_image_extraction": True,
+                "skip_table_detection": True,
+                "disable_math_detection": True,
             }
 
             # Log configuration summary
@@ -560,10 +571,15 @@ class DocumentProcessor:
             # Force GPU memory optimization
             if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()  # Clear GPU memory
-                torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction)  # Use configured GPU memory fraction
-                torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
-                torch.backends.cuda.matmul.allow_tf32 = True  # Use TensorFloat-32
-                torch.backends.cudnn.allow_tf32 = True  # Use TensorFloat-32
+                torch.cuda.synchronize()  # Ensure all operations complete
+
+                # Set memory fraction more conservatively
+                torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction)
+
+                # Disable benchmark for more predictable memory usage
+                torch.backends.cudnn.benchmark = False
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
 
                 # Additional optimizations
                 torch.set_float32_matmul_precision('high')  # Optimize matrix multiplication
@@ -575,6 +591,8 @@ class DocumentProcessor:
                     import torch._dynamo as torch_dynamo
                     torch_dynamo.config.suppress_errors = True
                     torch_dynamo.config.cache_size_limit = 1
+                    # Fully disable torch compile
+                    os.environ['TORCH_COMPILE_DISABLE'] = '1'
                     logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
 
                 logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
@@ -583,18 +601,50 @@ class DocumentProcessor:
             else:
                 logger.warning("CUDA not available, skipping GPU optimizations")
             
-            # Convert PDF to markdown
+            # Convert PDF to markdown with memory management
             logger.info(f"Converting {file_path} with optimized GPU acceleration...")
             start_time = time.perf_counter()
-            
-            # Run conversion
-            rendered = converter(file_path)
-            text, _, _ = text_from_rendered(rendered)
-            
-            processing_time = time.perf_counter() - start_time
-            logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
-            
-            return text
+
+            try:
+                # Clear GPU cache before processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                # Run conversion with error handling
+                rendered = converter(file_path)
+                text, _, _ = text_from_rendered(rendered)
+
+                # Clear GPU cache after processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                processing_time = time.perf_counter() - start_time
+                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
+
+                return text
+
+            except torch.cuda.OutOfMemoryError as e:
+                logger.error(f"GPU out of memory: {e}")
+                logger.info("Attempting to clear cache and retry with smaller batch...")
+
+                # Emergency memory cleanup
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                    # Force garbage collection
+                    import gc
+                    gc.collect()
+
+                    # Try to clear model cache if possible
+                    if hasattr(converter, 'model'):
+                        del converter.model
+                    del converter
+
+                    torch.cuda.empty_cache()
+
+                raise RuntimeError(f"GPU out of memory. Please reduce batch sizes or use API mode: {e}")
             
         except ImportError as e:
             logger.error(f"Marker Python API not available: {e}")
@@ -644,14 +694,34 @@ async def convert_to_markdown(
     if use_local is None:
         use_local = True
 
-    # Choose between local and API processing
+    # Choose between local and API processing with automatic fallback
     if use_local:
         logger.info("Using local Marker for processing")
-        markdown_content = processor._process_with_local_marker(file_path)
+        try:
+            markdown_content = processor._process_with_local_marker(file_path)
 
-        # If local processing fails, raise error instead of fallback
-        if markdown_content is None:
-            raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
+            if markdown_content:
+                return markdown_content
+            else:
+                logger.warning("Local processing returned empty result")
+
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            logger.error(f"Local processing failed with GPU error: {e}")
+
+            # If webhook URL is available, try API as fallback
+            if webhook_url:
+                logger.info("Falling back to API processing due to GPU error")
+                try:
+                    markdown_content = await processor._upload_to_marker(file_path, webhook_url)
+                    if markdown_content:
+                        logger.info("API fallback successful")
+                        return markdown_content
+                except Exception as api_error:
+                    logger.error(f"API fallback also failed: {api_error}")
+
+            # If no webhook URL or API also failed, raise the original error
+            raise RuntimeError(f"Local Marker processing failed: {e}. Try reducing batch sizes or using API mode.")
+
     else:
         if not webhook_url:
             raise ValueError("webhook_url is required when use_local is False")

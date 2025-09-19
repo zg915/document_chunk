@@ -55,7 +55,7 @@ services:
       - OPENBLAS_NUM_THREADS=1
       - VECLIB_MAXIMUM_THREADS=1
       - NUMEXPR_MAX_THREADS=1
-      - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - TORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}
     restart: unless-stopped
     depends_on:
       - webhook

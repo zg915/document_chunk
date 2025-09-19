@@ -55,8 +55,12 @@ def preload_marker_models():
         
         # Create models with GPU optimizations
         if torch.cuda.is_available():
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                models = create_model_dict()
+            # Clear cache before loading models
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            # Don't use autocast during model loading to avoid issues
+            models = create_model_dict()
         else:
             models = create_model_dict()
             
@@ -83,13 +87,16 @@ def preload_marker_models():
                             model.model = model.model.to(memory_format=torch.channels_last)
                             logger.info(f"  {name}: Applied channels_last format")
                         
-                        # Compile model if available (PyTorch 2.0+)
-                        if hasattr(torch, 'compile') and torch.__version__ >= '2.0':
+                        # Compile model if available and not disabled
+                        if (hasattr(torch, 'compile') and torch.__version__ >= '2.0' and
+                            os.getenv('DISABLE_TORCH_COMPILE', 'false').lower() != 'true'):
                             try:
                                 model.model = torch.compile(model.model, mode='reduce-overhead')
                                 logger.info(f"  {name}: Compiled with torch.compile")
                             except Exception as e:
                                 logger.warning(f"  {name}: Compilation failed: {e}")
+                        elif os.getenv('DISABLE_TORCH_COMPILE', 'false').lower() == 'true':
+                            logger.info(f"  {name}: Skipping torch.compile (disabled)")
                         
                         logger.info(f"  {name}: GPU optimizations applied")
                         
