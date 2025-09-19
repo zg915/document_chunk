@@ -440,7 +440,8 @@ class DocumentProcessor:
         try:
             logger.info("Using marker Python API for GPU-optimized processing")
 
-            # Ensure torch is available for GPU operations
+            # Ensure torch is available for GPU operations (declare as global to avoid scoping issues)
+            global torch
             if torch is None:
                 logger.error("PyTorch not available - cannot use local Marker processing")
                 return None
@@ -571,9 +572,9 @@ class DocumentProcessor:
 
                 # Disable torch compile if it causes issues
                 if os.getenv("DISABLE_TORCH_COMPILE", "false").lower() == "true":
-                    import torch._dynamo
-                    torch._dynamo.config.suppress_errors = True
-                    torch._dynamo.config.cache_size_limit = 1
+                    import torch._dynamo as torch_dynamo
+                    torch_dynamo.config.suppress_errors = True
+                    torch_dynamo.config.cache_size_limit = 1
                     logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
 
                 logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
