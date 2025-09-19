@@ -34,9 +34,9 @@ except Exception as e:
     print(f"GPU optimizations failed, continuing without: {e}")
     torch = None
 
-# Import Marker components at module level (only if GPU enabled)
+# Import Marker components at module level - always try to import if torch is available
 try:
-    if os.getenv("GPU_ENABLED", "false").lower() == "true" and torch is not None:
+    if torch is not None:  # Only check torch, not GPU_ENABLED env var
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict
         from marker.output import text_from_rendered
@@ -541,23 +541,19 @@ class DocumentProcessor:
                 "disable_math_detection": True,
             }
 
-            # Log configuration summary
+            # Log configuration summary - use values from config dict
             logger.info("=" * 60)
             logger.info("Marker Configuration Summary:")
             logger.info(f"  Document: {page_count} pages")
-            logger.info(f"  Batch Multiplier: {batch_multiplier}")
-            logger.info(f"  OCR Batch Size: {ocr_batch_size}")
-            logger.info(f"  Layout Batch Size: {layout_batch_size}")
-            logger.info(f"  Table Batch Size: {table_batch_size}")
-            logger.info(f"  Detection Batch Size: {detection_batch_size}")
-            logger.info(f"  Max Parallel Pages: {config['max_parallel_pages']}/{max_parallel_pages}")
-            logger.info(f"  Workers: {workers}")
-            logger.info(f"  Ray Workers: {ray_workers}")
-            logger.info(f"  GPU Memory Fraction: {gpu_memory_fraction}")
-            logger.info(f"  Skip Table Detection: {skip_table_detection}")
-            logger.info(f"  Disable Math Detection: {disable_math_detection}")
-            logger.info(f"  Disable Image Extraction: {disable_image_extraction}")
-            logger.info(f"  Persistent Workers: {config['persistent_workers']}")
+            logger.info(f"  Batch Multiplier: {config['batch_multiplier']}")
+            logger.info(f"  OCR Batch Size: {config['ocr_batch_size']}")
+            logger.info(f"  Layout Batch Size: {config['layout_batch_size']}")
+            logger.info(f"  Table Batch Size: {config['table_rec_batch_size']}")
+            logger.info(f"  Detection Batch Size: {config['detection_batch_size']}")
+            logger.info(f"  Max Parallel Pages: {config['max_parallel_pages']}")
+            logger.info(f"  Workers: {config['workers']}")
+            logger.info(f"  Ray Workers: {config['ray_workers']}")
+            logger.info(f"  GPU Memory Fraction: {config['gpu_memory_fraction']}")
             logger.info("=" * 60)
             
             config_parser = ConfigParser(config)
@@ -574,7 +570,7 @@ class DocumentProcessor:
                 torch.cuda.synchronize()  # Ensure all operations complete
 
                 # Set memory fraction more conservatively
-                torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction)
+                torch.cuda.set_per_process_memory_fraction(config['gpu_memory_fraction'])
 
                 # Disable benchmark for more predictable memory usage
                 torch.backends.cudnn.benchmark = False
@@ -595,7 +591,7 @@ class DocumentProcessor:
                     os.environ['TORCH_COMPILE_DISABLE'] = '1'
                     logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
 
-                logger.info(f"GPU memory fraction set to {gpu_memory_fraction}")
+                logger.info(f"GPU memory fraction set to {config['gpu_memory_fraction']}")
             elif torch is None:
                 logger.warning("PyTorch not available, skipping GPU optimizations")
             else:
