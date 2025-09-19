@@ -88,16 +88,43 @@ def get_pdf_page_count(file_path: str) -> int:
         Number of pages in the PDF
     """
     try:
-        if PyPDF2 is None:
-            logger.warning("PyPDF2 not available, estimating 10 pages")
-            return 10
-
-        with open(file_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            return len(pdf_reader.pages)
+        # Try PyPDF2 first
+        if PyPDF2 is not None:
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                page_count = len(pdf_reader.pages)
+                logger.info(f"Successfully counted {page_count} pages using PyPDF2")
+                return page_count
     except Exception as e:
-        logger.warning(f"Could not count PDF pages: {e}, estimating 10 pages")
-        return 10
+        logger.debug(f"PyPDF2 failed: {e}")
+
+    # Try with pycryptodome-compatible reader if available
+    try:
+        import pikepdf
+        with pikepdf.open(file_path) as pdf:
+            page_count = len(pdf.pages)
+            logger.info(f"Successfully counted {page_count} pages using pikepdf")
+            return page_count
+    except ImportError:
+        logger.debug("pikepdf not available")
+    except Exception as e:
+        logger.debug(f"pikepdf failed: {e}")
+
+    # Try pymupdf if available
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(file_path) as pdf:
+            page_count = len(pdf)
+            logger.info(f"Successfully counted {page_count} pages using PyMuPDF")
+            return page_count
+    except ImportError:
+        logger.debug("PyMuPDF not available")
+    except Exception as e:
+        logger.debug(f"PyMuPDF failed: {e}")
+
+    # Default fallback
+    logger.warning("Could not count PDF pages with any method, estimating 10 pages")
+    return 10
 
 
 class WebhookManager:
@@ -450,6 +477,9 @@ class DocumentProcessor:
             disable_math_detection = os.getenv("MARKER_DISABLE_MATH_DETECTION", "false").lower() == "true"
             disable_image_extraction = os.getenv("MARKER_DISABLE_IMAGE_EXTRACTION", "false").lower() == "true"
 
+            # Worker persistence control
+            persistent_workers_env = os.getenv("MARKER_PERSISTENT_WORKERS", "auto").lower()
+
             # Count pages for dynamic configuration
             page_count = get_pdf_page_count(file_path)
 
@@ -475,7 +505,11 @@ class DocumentProcessor:
                 # Mixed precision and optimization flags
                 "use_fp16": True,
                 "pin_memory": True,
-                "persistent_workers": page_count > 20,  # Auto-optimize based on doc size
+                "persistent_workers": (
+                    True if persistent_workers_env == "true" else
+                    False if persistent_workers_env == "false" else
+                    page_count > 10  # Auto: enable for docs > 10 pages (was 20)
+                ),
                 "prefetch_factor": 2,
 
                 # OCR optimizations

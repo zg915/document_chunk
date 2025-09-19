@@ -44,6 +44,17 @@ from integration import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Preload models at startup if GPU is enabled
+if os.getenv("GPU_ENABLED", "false").lower() == "true":
+    try:
+        logger.info("Preloading Marker models at API startup...")
+        from preload_models import preload_marker_models
+        preload_marker_models()
+        logger.info("✅ Models preloaded successfully at API startup")
+    except Exception as e:
+        logger.warning(f"Could not preload models at startup: {e}")
+        logger.info("Models will be loaded on first use")
+
 # Get the webhook manager instance from integration module
 webhook_manager = get_webhook_manager()
 

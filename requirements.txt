@@ -37,6 +37,12 @@ PyMuPDF>=1.23.0
 # PyPDF2 for PDF page counting
 PyPDF2>=3.0.0
 
+# PyCryptodome for encrypted PDF support
+pycryptodome>=3.19.0
+
+# pikepdf for robust PDF handling (handles encryption better)
+pikepdf>=8.0.0
+
 # OCR support (optional)
 pytesseract>=0.3.10
 
