@@ -563,84 +563,34 @@ class DocumentProcessor:
                 artifact_dict=models,
                 config=config_parser.generate_config_dict()
             )
+
+            # Clear GPU memory before processing
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
-            # Force GPU memory optimization
-            if torch is not None and torch.cuda.is_available():
-                torch.cuda.empty_cache()  # Clear GPU memory
-                torch.cuda.synchronize()  # Ensure all operations complete
-
-                # Set memory fraction more conservatively
-                torch.cuda.set_per_process_memory_fraction(config['gpu_memory_fraction'])
-
-                # Disable benchmark for more predictable memory usage
-                torch.backends.cudnn.benchmark = False
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-
-                # Additional optimizations
-                torch.set_float32_matmul_precision('high')  # Optimize matrix multiplication
-                if hasattr(torch.cuda, 'set_sync_debug_mode'):
-                    torch.cuda.set_sync_debug_mode(0)  # Disable debug synchronization
-
-                # Disable torch compile if it causes issues
-                if os.getenv("DISABLE_TORCH_COMPILE", "false").lower() == "true":
-                    import torch._dynamo as torch_dynamo
-                    torch_dynamo.config.suppress_errors = True
-                    torch_dynamo.config.cache_size_limit = 1
-                    # Fully disable torch compile
-                    os.environ['TORCH_COMPILE_DISABLE'] = '1'
-                    logger.info("Torch compile disabled due to DISABLE_TORCH_COMPILE=true")
-
-                logger.info(f"GPU memory fraction set to {config['gpu_memory_fraction']}")
-            elif torch is None:
-                logger.warning("PyTorch not available, skipping GPU optimizations")
-            else:
-                logger.warning("CUDA not available, skipping GPU optimizations")
-            
-            # Convert PDF to markdown with memory management
-            logger.info(f"Converting {file_path} with optimized GPU acceleration...")
+            # Convert PDF to markdown
+            logger.info(f"Converting {file_path}...")
             start_time = time.perf_counter()
 
             try:
-                # Clear GPU cache before processing
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-                # Run conversion with error handling
+                # Run conversion
                 rendered = converter(file_path)
                 text, _, _ = text_from_rendered(rendered)
+
+                processing_time = time.perf_counter() - start_time
+                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
 
                 # Clear GPU cache after processing
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-                processing_time = time.perf_counter() - start_time
-                logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
-
                 return text
 
             except torch.cuda.OutOfMemoryError as e:
                 logger.error(f"GPU out of memory: {e}")
-                logger.info("Attempting to clear cache and retry with smaller batch...")
-
-                # Emergency memory cleanup
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-                    # Force garbage collection
-                    import gc
-                    gc.collect()
-
-                    # Try to clear model cache if possible
-                    if hasattr(converter, 'model'):
-                        del converter.model
-                    del converter
-
-                    torch.cuda.empty_cache()
-
-                raise RuntimeError(f"GPU out of memory. Please reduce batch sizes or use API mode: {e}")
+                raise RuntimeError(f"GPU out of memory. Use API mode instead.")
             
         except ImportError as e:
             logger.error(f"Marker Python API not available: {e}")
