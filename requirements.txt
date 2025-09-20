@@ -64,3 +64,6 @@ ebooklib
 
 # HTML to PDF conversion
 weasyprint
+
+# Word document processing
+mammoth
