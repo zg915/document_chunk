@@ -61,3 +61,6 @@ msoffcrypto-tool
 
 # Additional document formats
 ebooklib
+
+# HTML to PDF conversion
+weasyprint
