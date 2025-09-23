@@ -61,3 +61,7 @@ msoffcrypto-tool
 
 # Additional document formats
 ebooklib
+
+# PDF generation and processing libraries
+weasyprint>=65.0
+pypdfium2>=4.30.0
