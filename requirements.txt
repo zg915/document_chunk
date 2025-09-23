@@ -58,6 +58,8 @@ pillow-heif
 openpyxl
 xlrd
 msoffcrypto-tool
+mammoth>=1.6.0
+python-docx2pdf>=0.1.8
 
 # Additional document formats
 ebooklib

@@ -29,6 +29,10 @@ RUN --mount=type=cache,target=/var/cache/apt \
     build-essential curl ca-certificates git \
     libmagic1 poppler-utils tesseract-ocr \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    # WeasyPrint dependencies
+    libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 \
+    # LibreOffice for document conversion (optional but recommended)
+    libreoffice \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
 
