@@ -45,8 +45,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install marker-pdf --no-deps --force-reinstall && \
     pip3 install torch torchvision transformers --upgrade && \
     # Verify installation
-    python3 -c "try: import marker; print('✅ Marker imported successfully'); except Exception as e: print('❌ Marker import failed:', e)" && \
-    python3 -c "try: from marker.converters.pdf import PdfConverter; print('✅ PdfConverter available'); except Exception as e: print('❌ PdfConverter failed:', e)"
+    python3 -c "import marker; print('Marker imported successfully')" || echo "Marker import failed" && \
+    python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed"
 
 # ---------- Pre-fetch runtime assets ----------
 RUN --mount=type=cache,target=/root/.cache/pip \
