@@ -17,7 +17,7 @@ Pillow==10.2.0
 
 
 # Marker for GPU-accelerated PDF processing
-marker-pdf[gpu]==1.9.2
+marker-pdf>=1.9.0
 
 # Unstructured document processing (with all features)
 unstructured[all-docs]==0.15.7
@@ -59,7 +59,6 @@ openpyxl
 xlrd
 msoffcrypto-tool
 mammoth>=1.6.0
-python-docx2pdf>=0.1.8
 
 # Additional document formats
 ebooklib

@@ -41,10 +41,12 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --upgrade pip && \
     pip3 install -r requirements.txt && \
-    # Ensure marker CLI commands are available
-    which marker || echo "marker command not found" && \
-    which marker_single || echo "marker_single command not found" && \
-    python3 -c "import marker; print('Marker package installed successfully')"
+    # Install marker-pdf separately to handle potential conflicts
+    pip3 install marker-pdf --no-deps --force-reinstall && \
+    pip3 install torch torchvision transformers --upgrade && \
+    # Verify installation
+    python3 -c "try: import marker; print('✅ Marker imported successfully'); except Exception as e: print('❌ Marker import failed:', e)" && \
+    python3 -c "try: from marker.converters.pdf import PdfConverter; print('✅ PdfConverter available'); except Exception as e: print('❌ PdfConverter failed:', e)"
 
 # ---------- Pre-fetch runtime assets ----------
 RUN --mount=type=cache,target=/root/.cache/pip \
