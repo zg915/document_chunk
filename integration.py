@@ -409,10 +409,10 @@ class DocumentProcessor:
             config = {
                 # GPU optimization - maximize parallel processing
                 "batch_multiplier": 12,  # Increased for better GPU utilization
-                "ocr_batch_size": 64,  # Much larger OCR batch for GPU efficiency
-                "layout_batch_size": 16,  # Larger layout batch
-                "table_rec_batch_size": 16,  # Larger table batch
-                "detection_batch_size": 32,  # Larger detection batch
+                "ocr_batch_size": 32,  # Much larger OCR batch for GPU efficiency
+                "layout_batch_size": 8,  # Larger layout batch
+                "table_rec_batch_size": 8,  # Larger table batch
+                "detection_batch_size": 16,  # Larger detection batch
                 
                 # OCR optimizations - keep GPU busy
                 # "ocr_all_pages": True,  # Process all pages in parallel
@@ -429,7 +429,7 @@ class DocumentProcessor:
                 # Parallel processing - maximize GPU usage
                 "workers": 8,  # More parallel workers
                 "ray_workers": 8,  # Ray parallel processing
-                "max_parallel_pages": 8,  # Process multiple pages simultaneously
+                "max_parallel_pages": 4,  # Process multiple pages simultaneously
                 
                 # GPU memory optimization
                 "gpu_memory_fraction": 0.8,  # Use 80% of GPU memory
