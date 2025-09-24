@@ -221,7 +221,10 @@ async def download_file_from_url(url: str) -> str:
         # Add extension if missing
         if '.' not in filename:
             # Try to determine extension from content-type
-            response = requests.head(url, timeout=10)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.head(url, headers=headers, timeout=10)
             content_type = response.headers.get('content-type', '')
             if 'pdf' in content_type:
                 filename += '.pdf'
@@ -239,8 +242,11 @@ async def download_file_from_url(url: str) -> str:
             else:
                 filename += '.pdf'  # default
 
-        # Download file
-        response = requests.get(url, timeout=30, stream=True)
+        # Download file with headers to avoid 403 errors
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=30, stream=True)
         response.raise_for_status()
 
         # Save to temp file
