@@ -650,17 +650,34 @@ class FastFileExtractor:
                 markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
 
             return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"PyMuPDFLoader failed: {e}")
             # Fallback to Unstructured if PyMuPDF fails
-            loader = UnstructuredPDFLoader(
-                file_path,
-                mode="single",
-                strategy="fast",
-                use_api=False  # Explicitly disable API usage
-            )
-            docs = loader.load()
-            markdown = self._format_documents(docs)
-            return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+            try:
+                loader = UnstructuredPDFLoader(
+                    file_path,
+                    mode="single",
+                    strategy="fast"
+                )
+                docs = loader.load()
+                markdown = self._format_documents(docs)
+                return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+            except Exception as e2:
+                logger.error(f"UnstructuredPDFLoader also failed: {e2}")
+                # Last resort: Try basic text extraction
+                try:
+                    import PyPDF2
+                    markdown = "# PDF Document\n\n"
+                    with open(file_path, 'rb') as file:
+                        reader = PyPDF2.PdfReader(file)
+                        for page_num, page in enumerate(reader.pages):
+                            text = page.extract_text()
+                            if text:
+                                markdown += f"\n## Page {page_num + 1}\n\n{text}\n\n"
+                    return markdown, {'total_pages': len(reader.pages), 'loader': 'PyPDF2'}
+                except Exception as e3:
+                    logger.error(f"PyPDF2 also failed: {e3}")
+                    raise e2
     
     def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Word document."""
@@ -699,39 +716,139 @@ class FastFileExtractor:
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Excel file."""
-        loader = UnstructuredExcelLoader(
-            file_path,
-            mode="single",
-            strategy="fast",  # Use fast local strategy
-            use_api=False  # Explicitly disable API usage if supported
-        )
-        docs = loader.load()
-        
-        markdown = "# Excel Document\n\n"
-        for doc in docs:
-            content = doc.page_content
-            if '\t' in content:
-                markdown += self._format_table(content)
-            else:
-                markdown += content + "\n\n"
-        
-        return markdown, {'total_sheets': len(docs)}
+        try:
+            # Try with minimal parameters first
+            loader = UnstructuredExcelLoader(
+                file_path,
+                mode="single"
+            )
+            docs = loader.load()
+
+            markdown = "# Excel Document\n\n"
+            for doc in docs:
+                content = doc.page_content
+                if '\t' in content:
+                    markdown += self._format_table(content)
+                else:
+                    markdown += content + "\n\n"
+
+            return markdown, {'total_sheets': len(docs)}
+        except Exception as e:
+            logger.warning(f"UnstructuredExcelLoader failed: {e}")
+
+            # Fallback: Try using pandas for Excel files
+            try:
+                import pandas as pd
+
+                # Read Excel file
+                xls = pd.ExcelFile(file_path)
+                markdown = "# Excel Document\n\n"
+
+                for sheet_name in xls.sheet_names:
+                    df = pd.read_excel(file_path, sheet_name=sheet_name)
+                    markdown += f"## Sheet: {sheet_name}\n\n"
+
+                    # Convert dataframe to markdown table
+                    if not df.empty:
+                        markdown += df.to_markdown(index=False) + "\n\n"
+                    else:
+                        markdown += "*(Empty sheet)*\n\n"
+
+                return markdown, {'total_sheets': len(xls.sheet_names), 'loader': 'pandas'}
+            except ImportError:
+                logger.error("pandas not installed for Excel fallback")
+            except Exception as e2:
+                logger.error(f"pandas fallback failed: {e2}")
+
+                # Last resort: try openpyxl directly for .xlsx files
+                if file_path.endswith('.xlsx'):
+                    try:
+                        from openpyxl import load_workbook
+                        wb = load_workbook(file_path, read_only=True, data_only=True)
+                        markdown = "# Excel Document\n\n"
+
+                        for sheet_name in wb.sheetnames:
+                            sheet = wb[sheet_name]
+                            markdown += f"## Sheet: {sheet_name}\n\n"
+
+                            # Extract data from sheet
+                            data = []
+                            for row in sheet.iter_rows(values_only=True):
+                                if any(cell is not None for cell in row):
+                                    data.append([str(cell) if cell is not None else "" for cell in row])
+
+                            if data:
+                                # Format as table
+                                markdown += "| " + " | ".join(data[0]) + " |\n"
+                                markdown += "|" + "---|" * len(data[0]) + "\n"
+                                for row in data[1:]:
+                                    markdown += "| " + " | ".join(row) + " |\n"
+                                markdown += "\n"
+                            else:
+                                markdown += "*(Empty sheet)*\n\n"
+
+                        wb.close()
+                        return markdown, {'total_sheets': len(wb.sheetnames), 'loader': 'openpyxl'}
+                    except ImportError:
+                        logger.error("openpyxl not installed for Excel fallback")
+                    except Exception as e3:
+                        logger.error(f"openpyxl fallback failed: {e3}")
+
+            # Re-raise original error if all fallbacks fail
+            raise e
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from PowerPoint presentation."""
-        loader = UnstructuredPowerPointLoader(
-            file_path,
-            mode="single",
-            strategy="fast",  # Use fast local strategy
-            use_api=False  # Explicitly disable API usage if supported
-        )
-        docs = loader.load()
-        
-        markdown = "# PowerPoint Presentation\n\n"
-        for doc in docs:
-            markdown += doc.page_content + "\n\n"
-        
-        return markdown, {'total_slides': len(docs)}
+        try:
+            # Try with minimal parameters first
+            loader = UnstructuredPowerPointLoader(
+                file_path,
+                mode="single"
+            )
+            docs = loader.load()
+
+            markdown = "# PowerPoint Presentation\n\n"
+            for doc in docs:
+                markdown += doc.page_content + "\n\n"
+
+            return markdown, {'total_slides': len(docs)}
+        except Exception as e:
+            logger.warning(f"UnstructuredPowerPointLoader failed: {e}")
+
+            # Fallback: Try using python-pptx for .pptx files
+            if file_path.endswith('.pptx'):
+                try:
+                    from pptx import Presentation
+
+                    prs = Presentation(file_path)
+                    markdown = "# PowerPoint Presentation\n\n"
+
+                    for slide_num, slide in enumerate(prs.slides, 1):
+                        markdown += f"## Slide {slide_num}\n\n"
+
+                        # Extract text from all shapes
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text:
+                                markdown += shape.text + "\n\n"
+
+                            # Handle tables
+                            if shape.has_table:
+                                table = shape.table
+                                markdown += "\n"
+                                for row in table.rows:
+                                    markdown += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
+                                    if table.rows.index(row) == 0:
+                                        markdown += "|" + "---|" * len(row.cells) + "\n"
+                                markdown += "\n"
+
+                    return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
+                except ImportError:
+                    logger.error("python-pptx not installed for PowerPoint fallback")
+                except Exception as e2:
+                    logger.error(f"python-pptx fallback failed: {e2}")
+
+            # Re-raise original error if fallback fails
+            raise e
     
     def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
         """Extract content from simple file types (text, markdown, HTML, CSV)."""
@@ -745,23 +862,44 @@ class FastFileExtractor:
             return f"# Text Document\n\n{content}", {'loader': 'Direct'}
         
         elif file_type == 'html':
-            loader = UnstructuredHTMLLoader(
-                file_path,
-                mode="single",
-                strategy="fast",
-                use_api=False
-            )
-            docs = loader.load()
-            return self._format_documents(docs), {'loader': 'HTML'}
+            try:
+                loader = UnstructuredHTMLLoader(
+                    file_path,
+                    mode="single"
+                )
+                docs = loader.load()
+                return self._format_documents(docs), {'loader': 'HTML'}
+            except Exception as e:
+                logger.warning(f"UnstructuredHTMLLoader failed: {e}")
+                # Fallback: Read HTML directly
+                from bs4 import BeautifulSoup
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    soup = BeautifulSoup(f.read(), 'html.parser')
+                    # Extract text
+                    text = soup.get_text(separator='\n', strip=True)
+                    return f"# HTML Document\n\n{text}", {'loader': 'BeautifulSoup'}
         
         elif file_type == 'csv':
-            loader = UnstructuredCSVLoader(
-                file_path,
-                mode="single",
-                strategy="fast",
-                use_api=False
-            )
-            docs = loader.load()
+            try:
+                loader = UnstructuredCSVLoader(
+                    file_path,
+                    mode="single"
+                )
+                docs = loader.load()
+            except Exception as e:
+                logger.warning(f"UnstructuredCSVLoader failed: {e}")
+                # Fallback: Use pandas
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(file_path)
+                    markdown = "# CSV Data\n\n"
+                    markdown += df.to_markdown(index=False) if not df.empty else "*(Empty CSV)*"
+                    return markdown, {'loader': 'pandas'}
+                except Exception as e2:
+                    # Last resort: Read as text
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    return self._format_table(content), {'loader': 'text'}
             markdown = "# CSV Data\n\n"
             for doc in docs:
                 markdown += self._format_table(doc.page_content)
@@ -779,12 +917,15 @@ class FastFileExtractor:
         if not loader_class:
             raise ValueError(f"No loader available for {file_type}")
         
-        loader = loader_class(
-            file_path,
-            mode="single",
-            strategy="fast",
-            use_api=False
-        )
+        # Try with minimal parameters
+        try:
+            loader = loader_class(
+                file_path,
+                mode="single"
+            )
+        except TypeError:
+            # Some loaders might not accept mode parameter
+            loader = loader_class(file_path)
         docs = loader.load()
         return self._format_documents(docs), {'loader': file_type.upper()}
     
