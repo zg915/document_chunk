@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Install NLTK if not already installed and download required data
 RUN pip3 install nltk && \
     python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]" && \
-    python3 -c "try: from marker.util import download_font; download_font(); print('Marker font pre-downloaded.') \nexcept: print('Marker font download skipped')"
+    (python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')" || echo "Marker font download skipped")
 
 # ---------- GPU optimization environment variables ----------
 ENV MARKER_NUM_WORKERS=4 \
