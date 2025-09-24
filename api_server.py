@@ -128,7 +128,9 @@ class FastConvertToMarkdownResponse(BaseModel):
     error: Optional[str] = None
 
 # Supported file formats for convert-doc-to-markdown (PDF and images only)
-SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp', '.docx', '.doc', '.xlsx', '.xls']
+SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp',
+                      '.docx', '.doc', '.xlsx', '.xls', '.ppt', '.pptx',
+                      '.csv', '.html', '.htm', '.txt', '.md', '.rtf', '.odt', '.epub']
 
 # Common error messages
 ERROR_MESSAGES = {
@@ -151,10 +153,28 @@ def validate_file_format(filename: str, supported_formats: List[str]) -> None:
 
 async def save_uploaded_file(file: UploadFile) -> str:
     """Save uploaded file to temp directory and return path."""
-    temp_file_path = os.path.join(tempfile.gettempdir(), file.filename)
+    import re
+    import uuid
+
+    # Sanitize filename - remove special characters but keep extension
+    file_ext = Path(file.filename).suffix.lower()
+    base_name = Path(file.filename).stem
+
+    # Replace problematic characters with underscores
+    safe_base_name = re.sub(r'[^\w\s-]', '_', base_name)
+    safe_base_name = re.sub(r'[-\s]+', '_', safe_base_name)
+
+    # Create unique filename to avoid conflicts
+    unique_id = str(uuid.uuid4())[:8]
+    safe_filename = f"{safe_base_name}_{unique_id}{file_ext}"
+
+    temp_file_path = os.path.join(tempfile.gettempdir(), safe_filename)
+
     with open(temp_file_path, "wb") as buffer:
         content = await file.read()
         buffer.write(content)
+
+    logger.info(f"Saved file: {file.filename} -> {safe_filename}")
     return temp_file_path
 
 def cleanup_temp_file(file_path: str) -> None:

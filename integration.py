@@ -716,86 +716,70 @@ class FastFileExtractor:
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Excel file."""
+        # Skip UnstructuredExcelLoader entirely and go straight to fallback methods
+        # because it seems to be making unwanted API calls internally
+        logger.info(f"Processing Excel file: {file_path}")
+
+        # Direct approach: Try using pandas first for Excel files
         try:
-            # Try with minimal parameters first
-            loader = UnstructuredExcelLoader(
-                file_path,
-                mode="single"
-            )
-            docs = loader.load()
+            import pandas as pd
 
+            # Read Excel file
+            xls = pd.ExcelFile(file_path)
             markdown = "# Excel Document\n\n"
-            for doc in docs:
-                content = doc.page_content
-                if '\t' in content:
-                    markdown += self._format_table(content)
+
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                markdown += f"## Sheet: {sheet_name}\n\n"
+
+                # Convert dataframe to markdown table
+                if not df.empty:
+                    markdown += df.to_markdown(index=False) + "\n\n"
                 else:
-                    markdown += content + "\n\n"
+                    markdown += "*(Empty sheet)*\n\n"
 
-            return markdown, {'total_sheets': len(docs)}
+            return markdown, {'total_sheets': len(xls.sheet_names), 'loader': 'pandas'}
+        except ImportError:
+            logger.error("pandas not installed for Excel processing")
         except Exception as e:
-            logger.warning(f"UnstructuredExcelLoader failed: {e}")
+            logger.error(f"pandas failed: {e}")
 
-            # Fallback: Try using pandas for Excel files
-            try:
-                import pandas as pd
+            # Last resort: try openpyxl directly for .xlsx files
+            if file_path.endswith('.xlsx'):
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(file_path, read_only=True, data_only=True)
+                    markdown = "# Excel Document\n\n"
 
-                # Read Excel file
-                xls = pd.ExcelFile(file_path)
-                markdown = "# Excel Document\n\n"
+                    for sheet_name in wb.sheetnames:
+                        sheet = wb[sheet_name]
+                        markdown += f"## Sheet: {sheet_name}\n\n"
 
-                for sheet_name in xls.sheet_names:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name)
-                    markdown += f"## Sheet: {sheet_name}\n\n"
+                        # Extract data from sheet
+                        data = []
+                        for row in sheet.iter_rows(values_only=True):
+                            if any(cell is not None for cell in row):
+                                data.append([str(cell) if cell is not None else "" for cell in row])
 
-                    # Convert dataframe to markdown table
-                    if not df.empty:
-                        markdown += df.to_markdown(index=False) + "\n\n"
-                    else:
-                        markdown += "*(Empty sheet)*\n\n"
+                        if data:
+                            # Format as table
+                            markdown += "| " + " | ".join(data[0]) + " |\n"
+                            markdown += "|" + "---|" * len(data[0]) + "\n"
+                            for row in data[1:]:
+                                markdown += "| " + " | ".join(row) + " |\n"
+                            markdown += "\n"
+                        else:
+                            markdown += "*(Empty sheet)*\n\n"
 
-                return markdown, {'total_sheets': len(xls.sheet_names), 'loader': 'pandas'}
-            except ImportError:
-                logger.error("pandas not installed for Excel fallback")
-            except Exception as e2:
-                logger.error(f"pandas fallback failed: {e2}")
+                    wb.close()
+                    return markdown, {'total_sheets': len(wb.sheetnames), 'loader': 'openpyxl'}
+                except ImportError:
+                    logger.error("openpyxl not installed for Excel fallback")
+                except Exception as e2:
+                    logger.error(f"openpyxl fallback failed: {e2}")
 
-                # Last resort: try openpyxl directly for .xlsx files
-                if file_path.endswith('.xlsx'):
-                    try:
-                        from openpyxl import load_workbook
-                        wb = load_workbook(file_path, read_only=True, data_only=True)
-                        markdown = "# Excel Document\n\n"
-
-                        for sheet_name in wb.sheetnames:
-                            sheet = wb[sheet_name]
-                            markdown += f"## Sheet: {sheet_name}\n\n"
-
-                            # Extract data from sheet
-                            data = []
-                            for row in sheet.iter_rows(values_only=True):
-                                if any(cell is not None for cell in row):
-                                    data.append([str(cell) if cell is not None else "" for cell in row])
-
-                            if data:
-                                # Format as table
-                                markdown += "| " + " | ".join(data[0]) + " |\n"
-                                markdown += "|" + "---|" * len(data[0]) + "\n"
-                                for row in data[1:]:
-                                    markdown += "| " + " | ".join(row) + " |\n"
-                                markdown += "\n"
-                            else:
-                                markdown += "*(Empty sheet)*\n\n"
-
-                        wb.close()
-                        return markdown, {'total_sheets': len(wb.sheetnames), 'loader': 'openpyxl'}
-                    except ImportError:
-                        logger.error("openpyxl not installed for Excel fallback")
-                    except Exception as e3:
-                        logger.error(f"openpyxl fallback failed: {e3}")
-
-            # Re-raise original error if all fallbacks fail
-            raise e
+            # If all methods fail, raise error
+            raise ValueError(f"Failed to extract Excel file: {e}")
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from PowerPoint presentation."""
