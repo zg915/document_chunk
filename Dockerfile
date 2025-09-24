@@ -38,17 +38,20 @@ RUN --mount=type=cache,target=/var/cache/apt \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
 
-# ---------- Python deps (use cache mount for pip) ----------
+# ---------- Python deps ----------
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --upgrade pip && \
+RUN pip3 install --upgrade pip && \
     pip3 install -r requirements.txt && \
     # Install marker-pdf separately to handle potential conflicts
     pip3 install marker-pdf --no-deps --force-reinstall && \
     pip3 install torch torchvision transformers --upgrade && \
     # Verify installation
     python3 -c "import marker; print('Marker imported successfully')" || echo "Marker import failed" && \
-    python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed"
+    python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed" && \
+    # Verify critical packages
+    python3 -c "import torch; print('PyTorch installed')" && \
+    python3 -c "import uvicorn; print('Uvicorn installed')" && \
+    python3 -c "import fastapi; print('FastAPI installed')"
 
 # ---------- Pre-fetch runtime assets ----------
 # Install NLTK if not already installed and download required data
@@ -81,14 +84,4 @@ RUN useradd --create-home --shell /bin/bash app \
 EXPOSE 8001
 
 
-CMD bash -c "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && \
-    chmod -R 777 /app/marker_output /home/app/.cache && \
-    chown -R app:app /app/marker_output /home/app && \
-    echo 'Checking Python environment...' && \
-    python3 -c 'import sys; print(f\"Python: {sys.version}\")' && \
-    echo 'Checking CUDA availability...' && \
-    (python3 -c 'try: import torch; print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"CUDA device count: {torch.cuda.device_count() if torch.cuda.is_available() else 0}\")\nexcept ImportError: print(\"PyTorch not installed, skipping CUDA check\")' || echo 'CUDA check failed, continuing...') && \
-    echo 'Preloading marker models for GPU optimization...' && \
-    (python3 /app/preload_models.py || echo 'Model preloading skipped') && \
-    echo 'Starting API server...' && \
-    python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001"
+CMD ["bash", "-c", "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && echo 'Starting API server...' && python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001"]
