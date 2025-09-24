@@ -142,14 +142,6 @@ ERROR_MESSAGES = {
     "PROCESSING_FAILED": "Error processing URL"
 }
 
-def validate_file_format(filename: str, supported_formats: List[str]) -> None:
-    """Validate uploaded file format."""
-    file_ext = Path(filename).suffix.lower()
-    if file_ext not in supported_formats:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file format: {file_ext}. Supported: {supported_formats}"
-        )
 
 async def save_uploaded_file(file: UploadFile) -> str:
     """Save uploaded file to temp directory and return path."""

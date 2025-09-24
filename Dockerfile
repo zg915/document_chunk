@@ -31,8 +31,10 @@ RUN --mount=type=cache,target=/var/cache/apt \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
     # WeasyPrint dependencies
     libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 \
-    # LibreOffice for document conversion (optional but recommended)
+    # LibreOffice for document conversion (required for .doc, .ppt, etc.)
     libreoffice \
+    # Additional libraries for image processing
+    libcairo2-dev pkg-config python3-dev \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
 
