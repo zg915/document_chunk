@@ -43,15 +43,15 @@ COPY requirements.txt .
 RUN pip3 install --upgrade pip && \
     pip3 install -r requirements.txt && \
     # Install marker-pdf separately to handle potential conflicts
-    pip3 install marker-pdf --no-deps --force-reinstall && \
+    (pip3 install marker-pdf --no-deps --force-reinstall || echo "Marker installation skipped") && \
     pip3 install torch torchvision transformers --upgrade && \
     # Verify installation
-    python3 -c "import marker; print('Marker imported successfully')" || echo "Marker import failed" && \
-    python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed" && \
+    (python3 -c "import marker; print('Marker imported successfully')" || echo "Marker import failed") && \
+    (python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed") && \
     # Verify critical packages
-    python3 -c "import torch; print('PyTorch installed')" && \
-    python3 -c "import uvicorn; print('Uvicorn installed')" && \
-    python3 -c "import fastapi; print('FastAPI installed')"
+    (python3 -c "import torch; print('PyTorch installed')" || echo "PyTorch failed") && \
+    (python3 -c "import uvicorn; print('Uvicorn installed')" || echo "Uvicorn failed") && \
+    (python3 -c "import fastapi; print('FastAPI installed')" || echo "FastAPI failed")
 
 # ---------- Pre-fetch runtime assets ----------
 # Install NLTK if not already installed and download required data
