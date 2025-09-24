@@ -652,20 +652,59 @@ class FastFileExtractor:
             return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
         except Exception:
             # Fallback to Unstructured if PyMuPDF fails
-            loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
+            loader = UnstructuredPDFLoader(
+                file_path,
+                mode="single",
+                strategy="fast",
+                use_api=False  # Explicitly disable API usage
+            )
             docs = loader.load()
             markdown = self._format_documents(docs)
             return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
     
     def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Word document."""
-        loader = UnstructuredWordDocumentLoader(file_path, mode="single")
-        docs = loader.load()
-        return self._format_documents(docs), {'total_elements': len(docs)}
+        try:
+            # Try using local processing without API calls
+            loader = UnstructuredWordDocumentLoader(
+                file_path,
+                mode="single",
+                strategy="fast",  # Use fast local strategy
+                hi_res_model_name=None,  # Disable high-res model that might use API
+                use_api=False  # Explicitly disable API usage if supported
+            )
+            docs = loader.load()
+            return self._format_documents(docs), {'total_elements': len(docs)}
+        except Exception as e:
+            # If UnstructuredWordDocumentLoader fails, try alternative approach
+            logger.warning(f"UnstructuredWordDocumentLoader failed: {e}")
+
+            # Fallback: Try using python-docx directly for .docx files
+            if file_path.endswith('.docx'):
+                try:
+                    import docx
+                    doc = docx.Document(file_path)
+                    markdown = "# Word Document\n\n"
+                    for paragraph in doc.paragraphs:
+                        if paragraph.text.strip():
+                            markdown += paragraph.text + "\n\n"
+                    return markdown, {'total_elements': len(doc.paragraphs), 'loader': 'python-docx'}
+                except ImportError:
+                    logger.error("python-docx not installed for fallback")
+                except Exception as e2:
+                    logger.error(f"python-docx fallback failed: {e2}")
+
+            # Re-raise the original error if no fallback worked
+            raise e
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Excel file."""
-        loader = UnstructuredExcelLoader(file_path, mode="single")
+        loader = UnstructuredExcelLoader(
+            file_path,
+            mode="single",
+            strategy="fast",  # Use fast local strategy
+            use_api=False  # Explicitly disable API usage if supported
+        )
         docs = loader.load()
         
         markdown = "# Excel Document\n\n"
@@ -680,7 +719,12 @@ class FastFileExtractor:
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from PowerPoint presentation."""
-        loader = UnstructuredPowerPointLoader(file_path, mode="single")
+        loader = UnstructuredPowerPointLoader(
+            file_path,
+            mode="single",
+            strategy="fast",  # Use fast local strategy
+            use_api=False  # Explicitly disable API usage if supported
+        )
         docs = loader.load()
         
         markdown = "# PowerPoint Presentation\n\n"
@@ -701,12 +745,22 @@ class FastFileExtractor:
             return f"# Text Document\n\n{content}", {'loader': 'Direct'}
         
         elif file_type == 'html':
-            loader = UnstructuredHTMLLoader(file_path, mode="single")
+            loader = UnstructuredHTMLLoader(
+                file_path,
+                mode="single",
+                strategy="fast",
+                use_api=False
+            )
             docs = loader.load()
             return self._format_documents(docs), {'loader': 'HTML'}
         
         elif file_type == 'csv':
-            loader = UnstructuredCSVLoader(file_path, mode="single")
+            loader = UnstructuredCSVLoader(
+                file_path,
+                mode="single",
+                strategy="fast",
+                use_api=False
+            )
             docs = loader.load()
             markdown = "# CSV Data\n\n"
             for doc in docs:
@@ -725,7 +779,12 @@ class FastFileExtractor:
         if not loader_class:
             raise ValueError(f"No loader available for {file_type}")
         
-        loader = loader_class(file_path, mode="single")
+        loader = loader_class(
+            file_path,
+            mode="single",
+            strategy="fast",
+            use_api=False
+        )
         docs = loader.load()
         return self._format_documents(docs), {'loader': file_type.upper()}
     
