@@ -17,7 +17,7 @@ Pillow==10.2.0
 
 
 # Marker for GPU-accelerated PDF processing
-marker-pdf>=1.9.0
+marker-pdf[full]>=1.9.0
 
 # Unstructured document processing (with all features)
 unstructured[all-docs]==0.15.7
