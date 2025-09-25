@@ -40,26 +40,54 @@ def check_gpu_availability():
         logger.warning("CUDA not available - falling back to CPU")
         return False
 
+def preload_datalab_models():
+    """Download all datalab/marker models to cache."""
+    logger.info("=== Downloading Datalab Models ===")
+    start_time = time.perf_counter()
+
+    try:
+        # Import marker modules to trigger model downloads
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+
+        logger.info("Initializing PdfConverter to download models...")
+
+        # Create a dummy converter instance to trigger model downloads
+        converter = PdfConverter()
+
+        download_time = time.perf_counter() - start_time
+        logger.info(f"Datalab models downloaded in {download_time:.2f}s")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Datalab model download failed: {e}")
+        return False
+
 def preload_marker_models():
     """Preload all marker models with GPU optimizations."""
     logger.info("=== Starting Model Preloading ===")
     start_time = time.perf_counter()
-    
+
     try:
+        # First download datalab models
+        if not preload_datalab_models():
+            logger.warning("Datalab model download failed, continuing with torch models only")
+
         # Import marker modules
         from marker.models import create_model_dict
         from marker.util import download_font
-        
+
         logger.info("Creating model dictionary...")
         model_start = time.perf_counter()
-        
+
         # Create models with GPU optimizations
         if torch.cuda.is_available():
             with torch.cuda.amp.autocast(dtype=torch.float16):
                 models = create_model_dict()
         else:
             models = create_model_dict()
-            
+
         model_load_time = time.perf_counter() - model_start
         logger.info(f"Models loaded in {model_load_time:.2f}s")
         
