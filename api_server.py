@@ -257,8 +257,8 @@ async def convert_format(file_path: str, target_ext: str) -> str:
             logger.info(f"Converted XLS to XLSX: {output_path}")
             return output_path
 
-        # DOC to DOCX, PPT to PPTX, RTF to DOCX, ODT to DOCX, DOT to DOCX using LibreOffice
-        elif source_ext in ['.doc', '.ppt', '.rtf', '.odt', '.dot'] and target_ext in ['.docx', '.pptx']:
+        # DOC to DOCX, PPT to PPTX, PPS to PPTX, RTF to DOCX, ODT to DOCX, DOT to DOCX using LibreOffice
+        elif source_ext in ['.doc', '.ppt', '.pps', '.rtf', '.odt', '.dot'] and target_ext in ['.docx', '.pptx']:
             # Use LibreOffice for conversion
             target_format = target_ext[1:]  # Remove the dot
             cmd = [
