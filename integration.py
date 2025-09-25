@@ -557,7 +557,7 @@ class FastFileExtractor:
     
     FILE_LOADERS = {
         '.pdf': 'pdf', '.doc': 'word', '.docx': 'word', '.xls': 'excel', '.xlsx': 'excel',
-        '.ppt': 'powerpoint', '.pptx': 'powerpoint', '.pps': 'powerpoint', '.jpg': 'image', '.jpeg': 'image',
+        '.ppt': 'powerpoint', '.pptx': 'powerpoint', '.jpg': 'image', '.jpeg': 'image',
         '.png': 'image', '.gif': 'image', '.bmp': 'image', '.tiff': 'image',
         '.html': 'html', '.htm': 'html', '.md': 'markdown', '.csv': 'csv',
         '.epub': 'epub', '.odt': 'odt', '.rtf': 'rtf', '.txt': 'text'
@@ -787,7 +787,7 @@ class FastFileExtractor:
         logger.info(f"Processing PowerPoint file: {file_path}")
 
         # Use python-pptx directly to avoid API calls
-        if file_path.endswith(('.pptx', '.pps')):
+        if file_path.endswith('.pptx'):
             try:
                 from pptx import Presentation
 

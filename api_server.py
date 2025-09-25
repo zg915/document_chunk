@@ -130,13 +130,14 @@ class FastConvertToMarkdownResponse(BaseModel):
 # Supported file formats for convert-doc-to-markdown
 # Formats that can be processed directly
 DIRECTLY_SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp',
-                               '.docx', '.xlsx', '.pptx', '.pps', '.html', '.htm', '.txt', '.md']
+                               '.docx', '.xlsx', '.pptx', '.html', '.htm', '.txt', '.md']
 
 # Formats that need conversion before processing
 CONVERTIBLE_FORMATS = {
     '.csv': '.xlsx',    # CSV to Excel
     '.xls': '.xlsx',    # Old Excel to new Excel
     '.ppt': '.pptx',    # Old PowerPoint to new PowerPoint
+    '.pps': '.pptx',    # PowerPoint Slideshow to PowerPoint Presentation
     '.doc': '.docx',    # Old Word to new Word
     '.svg': '.png',     # SVG to PNG
     '.dot': '.docx',    # Word template to Word document
