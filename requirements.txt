@@ -17,7 +17,7 @@ Pillow==10.2.0
 
 
 # Marker for GPU-accelerated PDF processing
-marker-pdf[full]>=1.9.0
+marker-pdf[full]
 
 # Unstructured document processing (with all features)
 unstructured[all-docs]==0.15.7
@@ -55,20 +55,20 @@ unstructured-inference==0.7.36
 pillow-heif
 
 # Microsoft Office document processing
-openpyxl>=3.1.5,<4.0.0
-xlrd>=2.0.0
-xlwt>=1.3.0  # For writing old Excel formats
+openpyxl
+xlrd
+xlwt  # For writing old Excel formats
 msoffcrypto-tool
-mammoth>=1.6.0
-python-pptx>=0.6.21  # For PowerPoint processing
+mammoth
+python-pptx # For PowerPoint processing
 
 # Additional document formats
 ebooklib
 
 # PDF generation and processing libraries
-weasyprint>=65.0
-pypdfium2>=4.30.0
-PyPDF2>=3.0.0  # Fallback PDF processor
+weasyprint
+pypdfium2
+PyPDF2 # Fallback PDF processor
 
 # Data processing and conversion
 pandas>=2.0.0  # For CSV and Excel processing
