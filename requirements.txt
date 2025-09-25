@@ -19,9 +19,9 @@ Pillow==10.2.0
 # Marker for GPU-accelerated PDF processing
 marker-pdf[full]
 
-# Unstructured document processing (with all features)
+# Unstructured document processing (with all features + PowerPoint support)
 unstructured[all-docs]==0.15.7
-
+unstructured[pptx]
 # NLP
 nltk>=3.9.0
 
@@ -60,7 +60,7 @@ xlrd
 xlwt  # For writing old Excel formats
 msoffcrypto-tool
 mammoth
-python-pptx # For PowerPoint processing
+# python-pptx # Included in unstructured[pptx]
 
 # Additional document formats
 ebooklib

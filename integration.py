@@ -783,43 +783,9 @@ class FastFileExtractor:
             raise ValueError(f"Failed to extract Excel file: {e}")
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from PowerPoint presentation."""
-        # For .pptx files, prioritize python-pptx which is more reliable
-        if file_path.endswith('.pptx'):
-            try:
-                from pptx import Presentation
-
-                prs = Presentation(file_path)
-                markdown = "# PowerPoint Presentation\n\n"
-
-                for slide_num, slide in enumerate(prs.slides, 1):
-                    markdown += f"## Slide {slide_num}\n\n"
-
-                    # Extract text from all shapes
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text") and shape.text:
-                            markdown += shape.text + "\n\n"
-
-                        # Handle tables
-                        if shape.has_table:
-                            table = shape.table
-                            markdown += "\n"
-                            for row_idx, row in enumerate(table.rows):
-                                markdown += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
-                                if row_idx == 0:
-                                    markdown += "|" + "---|" * len(row.cells) + "\n"
-                            markdown += "\n"
-
-                return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
-            except ImportError:
-                logger.error("python-pptx not installed for PowerPoint fallback")
-                # Fall through to try UnstructuredPowerPointLoader
-            except Exception as e:
-                logger.error(f"python-pptx failed: {e}")
-                # Fall through to try UnstructuredPowerPointLoader
-
-        # Try UnstructuredPowerPointLoader as fallback or for .ppt files
+        """Extract content from PowerPoint presentation using unstructured[pptx]."""
         try:
+            # Use UnstructuredPowerPointLoader with pptx extra for reliable processing
             loader = UnstructuredPowerPointLoader(
                 file_path,
                 mode="single",
@@ -832,8 +798,41 @@ class FastFileExtractor:
                 markdown += doc.page_content + "\n\n"
 
             return markdown, {'total_slides': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
+
         except Exception as e:
-            logger.error(f"All PowerPoint extraction methods failed: {e}")
+            logger.error(f"UnstructuredPowerPointLoader failed: {e}")
+
+            # Fallback: Try python-pptx for .pptx files only
+            if file_path.endswith('.pptx'):
+                try:
+                    from pptx import Presentation
+
+                    prs = Presentation(file_path)
+                    markdown = "# PowerPoint Presentation\n\n"
+
+                    for slide_num, slide in enumerate(prs.slides, 1):
+                        markdown += f"## Slide {slide_num}\n\n"
+
+                        # Extract text from all shapes
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text:
+                                markdown += shape.text + "\n\n"
+
+                            # Handle tables
+                            if shape.has_table:
+                                table = shape.table
+                                markdown += "\n"
+                                for row_idx, row in enumerate(table.rows):
+                                    markdown += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
+                                    if row_idx == 0:
+                                        markdown += "|" + "---|" * len(row.cells) + "\n"
+                                markdown += "\n"
+
+                    return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
+
+                except Exception as e2:
+                    logger.error(f"python-pptx fallback also failed: {e2}")
+
             raise ValueError(f"Failed to extract PowerPoint file: {e}")
     
     def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
