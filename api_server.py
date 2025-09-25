@@ -130,7 +130,7 @@ class FastConvertToMarkdownResponse(BaseModel):
 # Supported file formats for convert-doc-to-markdown
 # Formats that can be processed directly
 DIRECTLY_SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp',
-                               '.docx', '.xlsx', '.pptx', '.html', '.htm', '.txt', '.md']
+                               '.docx', '.xlsx', '.pptx', '.pps', '.html', '.htm', '.txt', '.md']
 
 # Formats that need conversion before processing
 CONVERTIBLE_FORMATS = {
