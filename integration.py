@@ -783,57 +783,80 @@ class FastFileExtractor:
             raise ValueError(f"Failed to extract Excel file: {e}")
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from PowerPoint presentation using unstructured[pptx]."""
-        try:
-            # Use UnstructuredPowerPointLoader with pptx extra for reliable processing
-            loader = UnstructuredPowerPointLoader(
-                file_path,
-                mode="single",
-                strategy="fast"  # Use fast strategy to avoid API calls
-            )
-            docs = loader.load()
+        """Extract content from PowerPoint presentation using python-pptx directly."""
+        logger.info(f"Processing PowerPoint file: {file_path}")
 
-            markdown = "# PowerPoint Presentation\n\n"
-            for doc in docs:
-                markdown += doc.page_content + "\n\n"
+        # Use python-pptx directly to avoid API calls
+        if file_path.endswith('.pptx'):
+            try:
+                from pptx import Presentation
 
-            return markdown, {'total_slides': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
+                prs = Presentation(file_path)
+                markdown = ""
 
-        except Exception as e:
-            logger.error(f"UnstructuredPowerPointLoader failed: {e}")
+                for slide_num, slide in enumerate(prs.slides, 1):
+                    # Extract text from all shapes
+                    slide_content = ""
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text.strip():
+                            slide_content += shape.text.strip() + "\n\n"
 
-            # Fallback: Try python-pptx for .pptx files only
-            if file_path.endswith('.pptx'):
+                        # Handle tables
+                        if shape.has_table:
+                            table = shape.table
+                            for row_idx, row in enumerate(table.rows):
+                                slide_content += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
+                                if row_idx == 0:
+                                    slide_content += "|" + "---|" * len(row.cells) + "\n"
+                            slide_content += "\n"
+
+                    # Only add slide content if it has text
+                    if slide_content.strip():
+                        markdown += slide_content
+
+                return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
+
+            except Exception as e:
+                logger.error(f"python-pptx failed: {e}")
+
+                # Fallback to UnstructuredPowerPointLoader as last resort
                 try:
-                    from pptx import Presentation
+                    loader = UnstructuredPowerPointLoader(
+                        file_path,
+                        mode="single",
+                        strategy="fast"
+                    )
+                    docs = loader.load()
 
-                    prs = Presentation(file_path)
-                    markdown = "# PowerPoint Presentation\n\n"
+                    markdown = ""
+                    for doc in docs:
+                        markdown += doc.page_content + "\n\n"
 
-                    for slide_num, slide in enumerate(prs.slides, 1):
-                        markdown += f"## Slide {slide_num}\n\n"
-
-                        # Extract text from all shapes
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text") and shape.text:
-                                markdown += shape.text + "\n\n"
-
-                            # Handle tables
-                            if shape.has_table:
-                                table = shape.table
-                                markdown += "\n"
-                                for row_idx, row in enumerate(table.rows):
-                                    markdown += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
-                                    if row_idx == 0:
-                                        markdown += "|" + "---|" * len(row.cells) + "\n"
-                                markdown += "\n"
-
-                    return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
+                    return markdown, {'total_elements': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
 
                 except Exception as e2:
-                    logger.error(f"python-pptx fallback also failed: {e2}")
+                    logger.error(f"UnstructuredPowerPointLoader also failed: {e2}")
+                    raise ValueError(f"Failed to extract PowerPoint file: {e}")
 
-            raise ValueError(f"Failed to extract PowerPoint file: {e}")
+        # For .ppt files (older format), try UnstructuredPowerPointLoader
+        else:
+            try:
+                loader = UnstructuredPowerPointLoader(
+                    file_path,
+                    mode="single",
+                    strategy="fast"
+                )
+                docs = loader.load()
+
+                markdown = ""
+                for doc in docs:
+                    markdown += doc.page_content + "\n\n"
+
+                return markdown, {'total_elements': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
+
+            except Exception as e:
+                logger.error(f"Failed to extract .ppt file: {e}")
+                raise ValueError(f"Failed to extract PowerPoint file: {e}")
     
     def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
         """Extract content from simple file types (text, markdown, HTML, CSV)."""
@@ -972,7 +995,7 @@ class FastFileExtractor:
 
 def fast_convert_to_markdown(
     file_path: str,
-    include_metadata: Optional[bool] = True
+    include_metadata: Optional[bool] = False
 ) -> Optional[str]:
     """
     Fast convert a document file to markdown format using FastFileExtractor.
@@ -1023,14 +1046,6 @@ def fast_convert_to_markdown(
             return None
         
         logger.info(f"Fast conversion completed in {processing_time:.2f}s")
-        
-        # Optionally append metadata to markdown
-        if include_metadata and result.get('metadata'):
-            metadata = result['metadata']
-            markdown_content += "\n\n---\n\n"
-            markdown_content += "## Processing Metadata\n\n"
-            for key, value in metadata.items():
-                markdown_content += f"- **{key.replace('_', ' ').title()}**: {value}\n"
         
     except Exception as e:
         logger.error(f"Fast conversion error: {e}")
@@ -1512,7 +1527,7 @@ def fast_doc_to_weaviate(
     document_id: str,
     tenant_id: str,
     client: Optional[object] = None,
-    include_metadata: Optional[bool] = True
+    include_metadata: Optional[bool] = False
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
