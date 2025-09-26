@@ -736,9 +736,9 @@ class FastFileExtractor:
                     raise e2
     
     def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from Word document."""
+        """Extract content from Word document with multiple fallbacks."""
+        # First, try using local processing without API calls
         try:
-            # Try using local processing without API calls
             loader = UnstructuredWordDocumentLoader(
                 file_path,
                 mode="single",
@@ -749,26 +749,86 @@ class FastFileExtractor:
             docs = loader.load()
             return self._format_documents(docs), {'total_elements': len(docs)}
         except Exception as e:
-            # If UnstructuredWordDocumentLoader fails, try alternative approach
             logger.warning(f"UnstructuredWordDocumentLoader failed: {e}")
 
-            # Fallback: Try using python-docx directly for .docx files
-            if file_path.endswith('.docx'):
-                try:
-                    import docx
-                    doc = docx.Document(file_path)
-                    markdown = "# Word Document\n\n"
-                    for paragraph in doc.paragraphs:
-                        if paragraph.text.strip():
-                            markdown += paragraph.text + "\n\n"
-                    return markdown, {'total_elements': len(doc.paragraphs), 'loader': 'python-docx'}
-                except ImportError:
-                    logger.error("python-docx not installed for fallback")
-                except Exception as e2:
-                    logger.error(f"python-docx fallback failed: {e2}")
+        # Fallback 1: Try using python-docx directly for .docx files
+        if file_path.endswith('.docx'):
+            try:
+                import docx
+                doc = docx.Document(file_path)
+                markdown = "# Word Document\n\n"
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        markdown += paragraph.text + "\n\n"
 
-            # Re-raise the original error if no fallback worked
-            raise e
+                # Also extract tables
+                for table in doc.tables:
+                    markdown += "\n"
+                    for row in table.rows:
+                        markdown += "| " + " | ".join([cell.text.strip() for cell in row.cells]) + " |\n"
+                        if table.rows.index(row) == 0:
+                            markdown += "|" + "---|" * len(row.cells) + "\n"
+                    markdown += "\n"
+
+                return markdown, {'total_elements': len(doc.paragraphs), 'loader': 'python-docx'}
+            except Exception as e2:
+                logger.error(f"python-docx fallback failed: {e2}")
+
+        # Fallback 2: Try extracting raw XML text for corrupted .docx
+        if file_path.endswith('.docx'):
+            try:
+                import zipfile
+                import xml.etree.ElementTree as ET
+
+                markdown = "# Word Document (Text Recovery)\n\n"
+                with zipfile.ZipFile(file_path, 'r') as docx:
+                    # Extract text from document.xml
+                    with docx.open('word/document.xml') as xml_file:
+                        tree = ET.parse(xml_file)
+                        root = tree.getroot()
+
+                        # Extract all text elements
+                        namespace = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                        paragraphs = root.findall('.//w:t', namespace)
+
+                        current_paragraph = []
+                        for elem in root.findall('.//w:p', namespace):
+                            texts = elem.findall('.//w:t', namespace)
+                            para_text = ' '.join([t.text for t in texts if t.text])
+                            if para_text.strip():
+                                markdown += para_text.strip() + "\n\n"
+
+                return markdown, {'total_elements': 1, 'loader': 'xml-recovery'}
+            except Exception as e3:
+                logger.error(f"XML extraction fallback failed: {e3}")
+
+        # Fallback 3: For .doc files, try using antiword or other text extraction
+        if file_path.endswith('.doc'):
+            try:
+                import subprocess
+                result = subprocess.run(['antiword', file_path], capture_output=True, text=True, timeout=30)
+                if result.returncode == 0 and result.stdout:
+                    markdown = "# Word Document\n\n" + result.stdout
+                    return markdown, {'total_elements': 1, 'loader': 'antiword'}
+            except Exception as e4:
+                logger.error(f"antiword fallback failed: {e4}")
+
+        # Last resort: Try to extract any readable text
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                # Clean up binary garbage
+                import string
+                printable = set(string.printable)
+                content = ''.join(filter(lambda x: x in printable, content))
+                if len(content) > 100:  # Only if we got meaningful content
+                    markdown = "# Document (Text Recovery)\n\n" + content
+                    return markdown, {'total_elements': 1, 'loader': 'text-recovery'}
+        except Exception as e5:
+            logger.error(f"Text recovery failed: {e5}")
+
+        # If all fallbacks fail, raise error
+        raise ValueError(f"Failed to extract Word document after all fallback attempts")
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from Excel file with robust error handling."""
@@ -858,8 +918,195 @@ class FastFileExtractor:
                 except Exception as e2:
                     logger.error(f"openpyxl fallback failed: {e2}")
 
-            # If all methods fail, raise error
-            raise ValueError(f"Failed to extract Excel file: {e}")
+        # Fallback 2: Try converting Excel to CSV using LibreOffice, then process as CSV
+        try:
+            logger.info("Attempting Excel to CSV conversion using LibreOffice...")
+            import subprocess
+            import tempfile
+
+            # Create temp directory for conversion
+            temp_dir = tempfile.mkdtemp()
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+
+            # Convert Excel to CSV using LibreOffice
+            cmd = [
+                'libreoffice',
+                '--headless',
+                '--convert-to', 'csv',
+                '--outdir', temp_dir,
+                file_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+            if result.returncode == 0:
+                # Look for the converted CSV file
+                csv_file = os.path.join(temp_dir, f"{base_name}.csv")
+                if os.path.exists(csv_file):
+                    logger.info(f"Successfully converted Excel to CSV: {csv_file}")
+
+                    # Process the CSV file
+                    try:
+                        import pandas as pd
+                        df = pd.read_csv(csv_file, encoding='utf-8', on_bad_lines='skip')
+                        markdown = "# Excel Document (Converted from CSV)\n\n"
+
+                        if not df.empty:
+                            # Limit very large datasets
+                            if len(df) > 1000:
+                                df = df.head(1000)
+                                markdown += "*Note: Showing first 1000 rows*\n\n"
+                            if len(df.columns) > 50:
+                                df = df.iloc[:, :50]
+                                markdown += "*Note: Showing first 50 columns*\n\n"
+
+                            markdown += df.to_markdown(index=False) + "\n\n"
+                        else:
+                            markdown += "*(No data found)*\n\n"
+
+                        # Clean up temp files
+                        try:
+                            os.unlink(csv_file)
+                            os.rmdir(temp_dir)
+                        except:
+                            pass
+
+                        return markdown, {'total_sheets': 1, 'loader': 'libreoffice-csv'}
+
+                    except Exception as csv_error:
+                        logger.error(f"Failed to process converted CSV: {csv_error}")
+                        # Clean up and continue to next fallback
+                        try:
+                            os.unlink(csv_file)
+                            os.rmdir(temp_dir)
+                        except:
+                            pass
+            else:
+                logger.error(f"LibreOffice conversion failed: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            logger.error("LibreOffice conversion timed out")
+        except Exception as libre_error:
+            logger.error(f"LibreOffice conversion error: {libre_error}")
+
+        # Fallback 3: Try using xlwings for complex Excel files (Windows only)
+        if os.name == 'nt':  # Windows only
+            try:
+                logger.info("Attempting xlwings extraction (Windows only)...")
+                import xlwings as xw
+
+                app = xw.App(visible=False)
+                wb = app.books.open(file_path)
+                markdown = "# Excel Document (xlwings extraction)\n\n"
+
+                for sheet in wb.sheets:
+                    try:
+                        markdown += f"## Sheet: {sheet.name}\n\n"
+
+                        # Get used range
+                        used_range = sheet.used_range
+                        if used_range:
+                            # Convert to pandas DataFrame for easier handling
+                            values = used_range.value
+                            if values:
+                                import pandas as pd
+                                if isinstance(values[0], list):
+                                    df = pd.DataFrame(values)
+                                else:
+                                    df = pd.DataFrame([values])
+
+                                # Limit size
+                                if len(df) > 1000:
+                                    df = df.head(1000)
+                                    markdown += "*Note: Showing first 1000 rows*\n\n"
+
+                                markdown += df.to_markdown(index=False) + "\n\n"
+                            else:
+                                markdown += "*(Empty sheet)*\n\n"
+                        else:
+                            markdown += "*(Empty sheet)*\n\n"
+
+                    except Exception as sheet_error:
+                        markdown += f"*(Error reading sheet {sheet.name}: {str(sheet_error)})*\n\n"
+                        logger.warning(f"xlwings failed to read sheet {sheet.name}: {sheet_error}")
+
+                wb.close()
+                app.quit()
+
+                return markdown, {'total_sheets': len(wb.sheets), 'loader': 'xlwings'}
+
+            except ImportError:
+                logger.warning("xlwings not available (Windows only or not installed)")
+            except Exception as xlwings_error:
+                logger.error(f"xlwings extraction failed: {xlwings_error}")
+                try:
+                    # Ensure Excel app is closed
+                    if 'app' in locals():
+                        app.quit()
+                except:
+                    pass
+
+        # Fallback 4: Raw text extraction as last resort
+        try:
+            logger.info("Attempting raw text extraction from Excel file...")
+            # For .xlsx files, try to extract text from the zip archive
+            if file_path.endswith('.xlsx'):
+                import zipfile
+                import xml.etree.ElementTree as ET
+
+                markdown = "# Excel Document (Raw Text Extraction)\n\n"
+                with zipfile.ZipFile(file_path, 'r') as xlsx:
+                    # Try to extract from shared strings and worksheets
+                    try:
+                        with xlsx.open('xl/sharedStrings.xml') as shared_strings:
+                            tree = ET.parse(shared_strings)
+                            root = tree.getroot()
+
+                            # Extract text from shared strings
+                            strings = []
+                            for si in root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t'):
+                                if si.text:
+                                    strings.append(si.text)
+
+                            if strings:
+                                markdown += "**Extracted Text Content:**\n\n"
+                                markdown += " | ".join(strings[:100])  # Limit to first 100 strings
+                                if len(strings) > 100:
+                                    markdown += f"\n\n*(... and {len(strings) - 100} more entries)*"
+                                markdown += "\n\n"
+
+                    except:
+                        pass
+
+                    # Also try to extract from worksheet files
+                    worksheet_files = [f for f in xlsx.namelist() if f.startswith('xl/worksheets/')]
+                    for ws_file in worksheet_files[:3]:  # Limit to first 3 worksheets
+                        try:
+                            with xlsx.open(ws_file) as worksheet:
+                                tree = ET.parse(worksheet)
+                                root = tree.getroot()
+
+                                # Extract cell values
+                                values = []
+                                for v in root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v'):
+                                    if v.text:
+                                        values.append(v.text)
+
+                                if values:
+                                    markdown += f"**Worksheet {ws_file}:**\n\n"
+                                    markdown += " | ".join(values[:50])  # Limit to first 50 values
+                                    markdown += "\n\n"
+                        except:
+                            continue
+
+                if len(markdown) > 50:  # If we extracted some content
+                    return markdown, {'total_sheets': len(worksheet_files), 'loader': 'raw-xml'}
+
+        except Exception as raw_error:
+            logger.error(f"Raw text extraction failed: {raw_error}")
+
+        # If all fallbacks fail, raise the original error
+        raise ValueError(f"Failed to extract Excel file after all fallback attempts: {e}")
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
         """Extract content from PowerPoint presentation using python-pptx directly."""
