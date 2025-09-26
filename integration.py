@@ -577,11 +577,14 @@ async def convert_to_markdown(
             return None
         file_ext = '.docx'
 
-    # Route 3: PowerPoint files (use FastFileExtractor)
-    if file_ext in Config.SUPPORTED_POWERPOINT_FORMATS:
-        return _process_with_fast_extractor(file_path, file_ext)
+    # Route 3: .ppt files (convert to .pptx for Marker)
+    if file_ext == '.ppt':
+        file_path = await _convert_ppt_to_pptx(file_path)
+        if not file_path:
+            return None
+        file_ext = '.pptx'
 
-    # Route 4: Marker GPU processing (PDF, images, .docx, .xlsx)
+    # Route 4: Marker GPU processing (PDF, images, .docx, .pptx, .xlsx)
     use_local = use_local if use_local is not None else True
 
     if use_local:
@@ -629,6 +632,36 @@ async def _convert_doc_to_docx(file_path: str) -> Optional[str]:
     except Exception as e:
         logger.error(f".doc to .docx conversion failed: {e}, falling back to FastFileExtractor")
         return _process_with_fast_extractor(file_path, '.doc')
+
+
+async def _convert_ppt_to_pptx(file_path: str) -> Optional[str]:
+    """Convert .ppt to .pptx for Marker processing."""
+    logger.info("Converting .ppt to .pptx for Marker GPU processing")
+
+    try:
+        import subprocess
+        import tempfile
+
+        temp_dir = tempfile.mkdtemp()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        pptx_file = os.path.join(temp_dir, f"{base_name}.pptx")
+
+        cmd = ['libreoffice', '--headless', '--convert-to', 'pptx', '--outdir', temp_dir, file_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode == 0 and os.path.exists(pptx_file):
+            logger.info(f"Successfully converted .ppt to .pptx: {pptx_file}")
+            return pptx_file
+        else:
+            logger.error(f"LibreOffice conversion failed: {result.stderr}")
+            return _process_with_fast_extractor(file_path, '.ppt')
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.ppt')
+    except Exception as e:
+        logger.error(f".ppt to .pptx conversion failed: {e}, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.ppt')
 
 
 def _process_with_fast_extractor(file_path: str, file_ext: str) -> Optional[str]:
