@@ -572,6 +572,23 @@ async def convert_to_markdown(
         else:
             raise ValueError(f"Failed to process text file: {file_path}")
 
+    # Check if it's an Office document that should use FastFileExtractor
+    office_formats = Config.SUPPORTED_EXCEL_FORMATS + Config.SUPPORTED_WORD_FORMATS + Config.SUPPORTED_POWERPOINT_FORMATS
+    if file_ext in office_formats:
+        logger.info(f"Processing {file_ext} file with FastFileExtractor")
+        from integration import FastFileExtractor
+        extractor = FastFileExtractor(include_metadata=False)
+
+        try:
+            result = extractor.extract(file_path)
+            if result['success']:
+                return result['markdown']
+            else:
+                raise ValueError(f"FastFileExtractor failed: {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.error(f"FastFileExtractor failed for {file_ext}: {e}")
+            raise ValueError(f"Failed to process {file_ext} file: {e}")
+
     # Default to local processing if use_local is not specified
     if use_local is None:
         use_local = True
