@@ -572,10 +572,79 @@ async def convert_to_markdown(
         else:
             raise ValueError(f"Failed to process text file: {file_path}")
 
-    # Check if it's other Office documents that should use FastFileExtractor
-    office_formats = Config.SUPPORTED_WORD_FORMATS + Config.SUPPORTED_POWERPOINT_FORMATS
-    if file_ext in office_formats:
-        logger.info(f"Processing {file_ext} file with FastFileExtractor")
+    # Check if it's a .doc file that needs conversion to .docx for Marker processing
+    if file_ext == '.doc':
+        logger.info("Converting .doc to .docx for Marker GPU processing")
+
+        try:
+            import subprocess
+            import tempfile
+
+            temp_dir = tempfile.mkdtemp()
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            docx_file = os.path.join(temp_dir, f"{base_name}.docx")
+
+            # Convert .doc to .docx using LibreOffice
+            cmd = [
+                'libreoffice',
+                '--headless',
+                '--convert-to', 'docx',
+                '--outdir', temp_dir,
+                file_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+            if result.returncode == 0 and os.path.exists(docx_file):
+                logger.info(f"Successfully converted .doc to .docx: {docx_file}")
+
+                # Update file_path to the .docx file for Marker processing
+                file_path = docx_file
+                file_ext = '.docx'
+                # Continue to Marker processing below
+
+            else:
+                logger.error(f"LibreOffice conversion failed: {result.stderr}")
+                # Fall back to FastFileExtractor if conversion fails
+                logger.info("Falling back to FastFileExtractor for .doc file")
+                from integration import FastFileExtractor
+                extractor = FastFileExtractor(include_metadata=False)
+
+                result = extractor.extract(file_path)
+                if result['success']:
+                    return result['markdown']
+                else:
+                    raise ValueError(f"Both .doc conversion and FastFileExtractor failed")
+
+        except subprocess.TimeoutExpired:
+            logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
+            from integration import FastFileExtractor
+            extractor = FastFileExtractor(include_metadata=False)
+
+            result = extractor.extract(file_path)
+            if result['success']:
+                return result['markdown']
+            else:
+                raise ValueError(f"LibreOffice timeout and FastFileExtractor failed")
+
+        except Exception as e:
+            logger.error(f".doc to .docx conversion failed: {e}, falling back to FastFileExtractor")
+            from integration import FastFileExtractor
+            extractor = FastFileExtractor(include_metadata=False)
+
+            try:
+                result = extractor.extract(file_path)
+                if result['success']:
+                    return result['markdown']
+                else:
+                    raise ValueError(f".doc conversion and FastFileExtractor failed: {e}")
+            except Exception as fallback_error:
+                logger.error(f"FastFileExtractor fallback also failed: {fallback_error}")
+                raise ValueError(f"Failed to process .doc file: {e}")
+
+    # Check if it's PowerPoint that should use FastFileExtractor (Marker doesn't support PowerPoint)
+    if file_ext in Config.SUPPORTED_POWERPOINT_FORMATS:
+        logger.info(f"Processing {file_ext} file with FastFileExtractor (PowerPoint not supported by Marker)")
         from integration import FastFileExtractor
         extractor = FastFileExtractor(include_metadata=False)
 
@@ -598,59 +667,7 @@ async def convert_to_markdown(
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
 
-        # If local processing fails AND it's an Excel file, try CSV conversion
-        if markdown_content is None and file_ext in Config.SUPPORTED_EXCEL_FORMATS:
-            logger.warning("Marker processing failed for Excel file, attempting CSV conversion fallback")
-
-            try:
-                # Convert Excel to CSV using LibreOffice
-                import subprocess
-                import tempfile
-
-                temp_dir = tempfile.mkdtemp()
-                base_name = os.path.splitext(os.path.basename(file_path))[0]
-                csv_file = os.path.join(temp_dir, f"{base_name}.csv")
-
-                # Try LibreOffice conversion
-                cmd = [
-                    'libreoffice',
-                    '--headless',
-                    '--convert-to', 'csv',
-                    '--outdir', temp_dir,
-                    file_path
-                ]
-
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-                if result.returncode == 0 and os.path.exists(csv_file):
-                    logger.info(f"Successfully converted Excel to CSV: {csv_file}")
-                    logger.info("Re-attempting Marker processing with converted CSV")
-
-                    # Try Marker processing again with the CSV file
-                    markdown_content = processor._process_with_local_marker(csv_file)
-
-                    # Clean up the CSV file
-                    try:
-                        os.unlink(csv_file)
-                        os.rmdir(temp_dir)
-                    except:
-                        pass
-
-                    if markdown_content:
-                        logger.info("Successfully processed Excel via CSV conversion through Marker")
-                        return markdown_content
-                    else:
-                        logger.error("Marker processing failed even with CSV conversion")
-
-                else:
-                    logger.error(f"LibreOffice conversion failed: {result.stderr}")
-
-            except subprocess.TimeoutExpired:
-                logger.error("LibreOffice conversion timed out")
-            except Exception as csv_error:
-                logger.error(f"Excel to CSV conversion failed: {csv_error}")
-
-        # If still no content, raise error
+        # If local processing fails, raise error instead of fallback
         if markdown_content is None:
             raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
     else:
