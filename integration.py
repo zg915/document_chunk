@@ -534,10 +534,10 @@ async def convert_to_markdown(
     webhook_url: Optional[str] = None
 ) -> Optional[str]:
     """
-    Convert a PDF or image file to markdown format.
+    Convert a document to markdown format using Marker GPU processing.
 
     Args:
-        file_path: Path to the input file (PDF or supported image format)
+        file_path: Path to the input file
         use_local: Whether to use local Marker (True) or API (False). Defaults to True.
         webhook_url: URL for webhook callback (required if use_local is False)
 
@@ -548,7 +548,7 @@ async def convert_to_markdown(
         FileNotFoundError: If the input file doesn't exist
         ValueError: If the file format is not supported
     """
-    # Validate input
+    # Input validation and normalization
     file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
     file_path = os.path.abspath(file_path)
 
@@ -559,131 +559,94 @@ async def convert_to_markdown(
     if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
 
-    # Process file
-    processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
+    processor = DocumentProcessor()
 
-    # Check if it's a text-based file first
+    # Route 1: Text files (direct processing)
     if file_ext in Config.SUPPORTED_TEXT_FORMATS:
         logger.info("Processing text-based file")
         markdown_content = processor._process_text_file(file_path)
-        if markdown_content:
-            return markdown_content
-        else:
+        if not markdown_content:
             raise ValueError(f"Failed to process text file: {file_path}")
+        return markdown_content
 
-    # Check if it's a .doc file that needs conversion to .docx for Marker processing
+    # Route 2: .doc files (convert to .docx for Marker)
     if file_ext == '.doc':
-        logger.info("Converting .doc to .docx for Marker GPU processing")
+        file_path = await _convert_doc_to_docx(file_path)
+        if not file_path:
+            return None
+        file_ext = '.docx'
 
-        try:
-            import subprocess
-            import tempfile
-
-            temp_dir = tempfile.mkdtemp()
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            docx_file = os.path.join(temp_dir, f"{base_name}.docx")
-
-            # Convert .doc to .docx using LibreOffice
-            cmd = [
-                'libreoffice',
-                '--headless',
-                '--convert-to', 'docx',
-                '--outdir', temp_dir,
-                file_path
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-            if result.returncode == 0 and os.path.exists(docx_file):
-                logger.info(f"Successfully converted .doc to .docx: {docx_file}")
-
-                # Update file_path to the .docx file for Marker processing
-                file_path = docx_file
-                file_ext = '.docx'
-                # Continue to Marker processing below
-
-            else:
-                logger.error(f"LibreOffice conversion failed: {result.stderr}")
-                # Fall back to FastFileExtractor if conversion fails
-                logger.info("Falling back to FastFileExtractor for .doc file")
-                from integration import FastFileExtractor
-                extractor = FastFileExtractor(include_metadata=False)
-
-                result = extractor.extract(file_path)
-                if result['success']:
-                    return result['markdown']
-                else:
-                    raise ValueError(f"Both .doc conversion and FastFileExtractor failed")
-
-        except subprocess.TimeoutExpired:
-            logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
-            from integration import FastFileExtractor
-            extractor = FastFileExtractor(include_metadata=False)
-
-            result = extractor.extract(file_path)
-            if result['success']:
-                return result['markdown']
-            else:
-                raise ValueError(f"LibreOffice timeout and FastFileExtractor failed")
-
-        except Exception as e:
-            logger.error(f".doc to .docx conversion failed: {e}, falling back to FastFileExtractor")
-            from integration import FastFileExtractor
-            extractor = FastFileExtractor(include_metadata=False)
-
-            try:
-                result = extractor.extract(file_path)
-                if result['success']:
-                    return result['markdown']
-                else:
-                    raise ValueError(f".doc conversion and FastFileExtractor failed: {e}")
-            except Exception as fallback_error:
-                logger.error(f"FastFileExtractor fallback also failed: {fallback_error}")
-                raise ValueError(f"Failed to process .doc file: {e}")
-
-    # Check if it's PowerPoint that should use FastFileExtractor (Marker doesn't support PowerPoint)
+    # Route 3: PowerPoint files (use FastFileExtractor)
     if file_ext in Config.SUPPORTED_POWERPOINT_FORMATS:
-        logger.info(f"Processing {file_ext} file with FastFileExtractor (PowerPoint not supported by Marker)")
-        from integration import FastFileExtractor
-        extractor = FastFileExtractor(include_metadata=False)
+        return _process_with_fast_extractor(file_path, file_ext)
 
-        try:
-            result = extractor.extract(file_path)
-            if result['success']:
-                return result['markdown']
-            else:
-                raise ValueError(f"FastFileExtractor failed: {result.get('error', 'Unknown error')}")
-        except Exception as e:
-            logger.error(f"FastFileExtractor failed for {file_ext}: {e}")
-            raise ValueError(f"Failed to process {file_ext} file: {e}")
+    # Route 4: Marker GPU processing (PDF, images, .docx, .xlsx)
+    use_local = use_local if use_local is not None else True
 
-    # Default to local processing if use_local is not specified
-    if use_local is None:
-        use_local = True
-
-    # Choose between local and API processing
     if use_local:
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
-
-        # If local processing fails, raise error instead of fallback
-        if markdown_content is None:
+        if not markdown_content:
             raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
     else:
         if not webhook_url:
             raise ValueError("webhook_url is required when use_local is False")
-
         logger.info("Using Marker API with webhook for processing")
-        # Upload and wait for webhook response
         markdown_content = await processor._upload_to_marker(file_path, webhook_url)
         if not markdown_content:
             return None
 
-    if not markdown_content:
-        return None
-
     return markdown_content
+
+
+# Helper functions for convert_to_markdown
+async def _convert_doc_to_docx(file_path: str) -> Optional[str]:
+    """Convert .doc to .docx for Marker processing."""
+    logger.info("Converting .doc to .docx for Marker GPU processing")
+
+    try:
+        import subprocess
+        import tempfile
+
+        temp_dir = tempfile.mkdtemp()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        docx_file = os.path.join(temp_dir, f"{base_name}.docx")
+
+        cmd = ['libreoffice', '--headless', '--convert-to', 'docx', '--outdir', temp_dir, file_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode == 0 and os.path.exists(docx_file):
+            logger.info(f"Successfully converted .doc to .docx: {docx_file}")
+            return docx_file
+        else:
+            logger.error(f"LibreOffice conversion failed: {result.stderr}")
+            return _process_with_fast_extractor(file_path, '.doc')
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.doc')
+    except Exception as e:
+        logger.error(f".doc to .docx conversion failed: {e}, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.doc')
+
+
+def _process_with_fast_extractor(file_path: str, file_ext: str) -> Optional[str]:
+    """Process file with FastFileExtractor."""
+    logger.info(f"Processing {file_ext} file with FastFileExtractor")
+
+    try:
+        from integration import FastFileExtractor
+        extractor = FastFileExtractor(include_metadata=False)
+        result = extractor.extract(file_path)
+
+        if result['success']:
+            return result['markdown']
+        else:
+            raise ValueError(f"FastFileExtractor failed: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        logger.error(f"FastFileExtractor failed for {file_ext}: {e}")
+        raise ValueError(f"Failed to process {file_ext} file: {e}")
 
 
 # new class and functions for fast conversion 
@@ -1413,57 +1376,52 @@ def fast_convert_to_markdown(
     Fast convert a document file to markdown format using FastFileExtractor.
 
     Args:
-        file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
+        file_path: Path to the input file
         include_metadata: Whether to include processing metadata in output
-        
+
     Returns:
         Markdown content as string, or None if conversion failed
-        
+
     Raises:
         FileNotFoundError: If the input file doesn't exist
         ValueError: If the file format is not supported
     """
-    # Validate input
+    # Input validation and normalization
     file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
     file_path = os.path.abspath(file_path)
-    
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    
+
     file_ext = os.path.splitext(file_path)[1].lower()
     if file_ext not in FastFileExtractor.FILE_LOADERS:
         supported_formats = list(FastFileExtractor.FILE_LOADERS.keys())
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {supported_formats}")
-    
-    # Initialize fast extractor
-    extractor = FastFileExtractor(
-        include_metadata=include_metadata
-    )
 
     logger.info(f"Fast processing file: {file_path}")
-    
-    # Extract content
+
+    # Initialize and run fast extraction
     try:
+        extractor = FastFileExtractor(include_metadata=include_metadata)
         result = extractor.extract(file_path)
-        
+
         if not result['success']:
             logger.error(f"Fast conversion failed: {result.get('error', 'Unknown error')}")
             return None
-        
+
         markdown_content = result['markdown']
-        processing_time = result['processing_time']
-        
         if not markdown_content:
             logger.error("Fast conversion returned empty content")
             return None
-        
+
+        processing_time = result['processing_time']
         logger.info(f"Fast conversion completed in {processing_time:.2f}s")
-        
+
+        return markdown_content
+
     except Exception as e:
         logger.error(f"Fast conversion error: {e}")
         return None
-
-    return markdown_content
 
 def chunk_markdown(
     markdown_input: Union[str, Path],
