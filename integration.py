@@ -376,6 +376,12 @@ class DocumentProcessor:
         Returns:
             Markdown content or None if failed
         """
+        # Check file extension - Marker has issues with PowerPoint files containing WMF images
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext in ['.ppt', '.pptx', '.pps']:
+            logger.info(f"Skipping Marker for PowerPoint files due to WMF image issues: {file_ext}")
+            return None
+
         # Check if GPU is enabled
         gpu_enabled = os.getenv("GPU_ENABLED", "false").lower() == "true"
         if not gpu_enabled:
