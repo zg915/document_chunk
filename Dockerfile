@@ -84,4 +84,4 @@ RUN useradd --create-home --shell /bin/bash app \
 EXPOSE 8001
 
 
-CMD ["bash", "-c", "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && echo 'Starting API server...' && python3 preload_models.py && python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001 --workers 4"]
+CMD ["bash", "-c", "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && echo 'Starting API server...' && python3 preload_models.py && python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001 --workers 2"]
