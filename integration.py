@@ -211,7 +211,8 @@ class Config:
     SUPPORTED_WORD_FORMATS = ['.docx', '.doc']
     SUPPORTED_EXCEL_FORMATS = ['.xlsx', '.xls']
     SUPPORTED_POWERPOINT_FORMATS = ['.pptx', '.ppt']
-    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS + SUPPORTED_POWERPOINT_FORMATS
+    SUPPORTED_TEXT_FORMATS = ['.txt', '.md', '.csv', '.html', '.htm']
+    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS + SUPPORTED_POWERPOINT_FORMATS + SUPPORTED_TEXT_FORMATS
     
     # Chunking parameters
     MAX_CHUNK_SIZE = 2500
@@ -273,6 +274,45 @@ class DocumentProcessor:
             logger.error(f"Failed to convert image to PDF: {e}")
             raise
     
+    def _process_text_file(self, file_path: str) -> Optional[str]:
+        """
+        Process text-based files (txt, md, csv, html).
+
+        Args:
+            file_path: Path to the text file
+
+        Returns:
+            Markdown content or None if failed
+        """
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+
+            if file_ext in ['.txt', '.md']:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                if file_ext == '.txt':
+                    # Convert plain text to markdown
+                    return f"# Document\n\n{content}"
+                return content
+
+            elif file_ext == '.csv':
+                import pandas as pd
+                df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
+                return f"# CSV Data\n\n{df.to_markdown(index=False)}"
+
+            elif file_ext in ['.html', '.htm']:
+                from bs4 import BeautifulSoup
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    soup = BeautifulSoup(f.read(), 'html.parser')
+                    text = soup.get_text(separator='\n', strip=True)
+                return f"# HTML Document\n\n{text}"
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to process text file {file_path}: {e}")
+            return None
+
     async def _upload_to_marker(self, file_path: str, webhook_url: str) -> Optional[str]:
         """
         Upload a file to the Marker API for processing using webhook.
@@ -523,6 +563,15 @@ async def convert_to_markdown(
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
 
+    # Check if it's a text-based file first
+    if file_ext in Config.SUPPORTED_TEXT_FORMATS:
+        logger.info("Processing text-based file")
+        markdown_content = processor._process_text_file(file_path)
+        if markdown_content:
+            return markdown_content
+        else:
+            raise ValueError(f"Failed to process text file: {file_path}")
+
     # Default to local processing if use_local is not specified
     if use_local is None:
         use_local = True
@@ -722,30 +771,54 @@ class FastFileExtractor:
             raise e
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from Excel file."""
-        # Skip UnstructuredExcelLoader entirely and go straight to fallback methods
-        # because it seems to be making unwanted API calls internally
+        """Extract content from Excel file with robust error handling."""
         logger.info(f"Processing Excel file: {file_path}")
 
-        # Direct approach: Try using pandas first for Excel files
+        # Try multiple approaches to handle corrupted Excel files
+
+        # Approach 1: Try pandas with different engines
         try:
             import pandas as pd
 
-            # Read Excel file
-            xls = pd.ExcelFile(file_path)
+            # Try reading with openpyxl engine first
+            try:
+                xls = pd.ExcelFile(file_path, engine='openpyxl')
+            except:
+                # If openpyxl fails, try xlrd for older formats
+                try:
+                    xls = pd.ExcelFile(file_path, engine='xlrd')
+                except:
+                    # Last resort: try calamine engine (if available)
+                    try:
+                        xls = pd.ExcelFile(file_path, engine='calamine')
+                    except:
+                        raise
+
             markdown = "# Excel Document\n\n"
 
             for sheet_name in xls.sheet_names:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
-                markdown += f"## Sheet: {sheet_name}\n\n"
+                try:
+                    df = pd.read_excel(xls, sheet_name=sheet_name)
+                    markdown += f"## Sheet: {sheet_name}\n\n"
 
-                # Convert dataframe to markdown table
-                if not df.empty:
-                    markdown += df.to_markdown(index=False) + "\n\n"
-                else:
-                    markdown += "*(Empty sheet)*\n\n"
+                    if not df.empty:
+                        # Limit columns and rows for very large sheets
+                        if len(df) > 1000:
+                            df = df.head(1000)
+                            markdown += "*Note: Showing first 1000 rows*\n\n"
+                        if len(df.columns) > 50:
+                            df = df.iloc[:, :50]
+                            markdown += "*Note: Showing first 50 columns*\n\n"
+
+                        markdown += df.to_markdown(index=False) + "\n\n"
+                    else:
+                        markdown += "*(Empty sheet)*\n\n"
+                except Exception as sheet_error:
+                    markdown += f"## Sheet: {sheet_name}\n\n*(Error reading sheet: {str(sheet_error)})*\n\n"
+                    logger.warning(f"Failed to read sheet {sheet_name}: {sheet_error}")
 
             return markdown, {'total_sheets': len(xls.sheet_names), 'loader': 'pandas'}
+
         except ImportError:
             logger.error("pandas not installed for Excel processing")
         except Exception as e:
