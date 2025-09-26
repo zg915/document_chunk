@@ -572,8 +572,8 @@ async def convert_to_markdown(
         else:
             raise ValueError(f"Failed to process text file: {file_path}")
 
-    # Check if it's an Office document that should use FastFileExtractor
-    office_formats = Config.SUPPORTED_EXCEL_FORMATS + Config.SUPPORTED_WORD_FORMATS + Config.SUPPORTED_POWERPOINT_FORMATS
+    # Check if it's other Office documents that should use FastFileExtractor
+    office_formats = Config.SUPPORTED_WORD_FORMATS + Config.SUPPORTED_POWERPOINT_FORMATS
     if file_ext in office_formats:
         logger.info(f"Processing {file_ext} file with FastFileExtractor")
         from integration import FastFileExtractor
@@ -598,7 +598,59 @@ async def convert_to_markdown(
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
 
-        # If local processing fails, raise error instead of fallback
+        # If local processing fails AND it's an Excel file, try CSV conversion
+        if markdown_content is None and file_ext in Config.SUPPORTED_EXCEL_FORMATS:
+            logger.warning("Marker processing failed for Excel file, attempting CSV conversion fallback")
+
+            try:
+                # Convert Excel to CSV using LibreOffice
+                import subprocess
+                import tempfile
+
+                temp_dir = tempfile.mkdtemp()
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                csv_file = os.path.join(temp_dir, f"{base_name}.csv")
+
+                # Try LibreOffice conversion
+                cmd = [
+                    'libreoffice',
+                    '--headless',
+                    '--convert-to', 'csv',
+                    '--outdir', temp_dir,
+                    file_path
+                ]
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+                if result.returncode == 0 and os.path.exists(csv_file):
+                    logger.info(f"Successfully converted Excel to CSV: {csv_file}")
+                    logger.info("Re-attempting Marker processing with converted CSV")
+
+                    # Try Marker processing again with the CSV file
+                    markdown_content = processor._process_with_local_marker(csv_file)
+
+                    # Clean up the CSV file
+                    try:
+                        os.unlink(csv_file)
+                        os.rmdir(temp_dir)
+                    except:
+                        pass
+
+                    if markdown_content:
+                        logger.info("Successfully processed Excel via CSV conversion through Marker")
+                        return markdown_content
+                    else:
+                        logger.error("Marker processing failed even with CSV conversion")
+
+                else:
+                    logger.error(f"LibreOffice conversion failed: {result.stderr}")
+
+            except subprocess.TimeoutExpired:
+                logger.error("LibreOffice conversion timed out")
+            except Exception as csv_error:
+                logger.error(f"Excel to CSV conversion failed: {csv_error}")
+
+        # If still no content, raise error
         if markdown_content is None:
             raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
     else:
