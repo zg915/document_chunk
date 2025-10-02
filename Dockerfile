@@ -29,23 +29,35 @@ RUN --mount=type=cache,target=/var/cache/apt \
     build-essential curl ca-certificates git \
     libmagic1 poppler-utils tesseract-ocr \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    # WeasyPrint dependencies
+    libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 \
+    # LibreOffice for document conversion (required for .doc, .ppt, etc.)
+    libreoffice \
+    # Additional libraries for image processing
+    libcairo2-dev pkg-config python3-dev \
  && ln -s /usr/bin/python3.10 /usr/bin/python
 
 
-# ---------- Python deps (use cache mount for pip) ----------
+# ---------- Python deps ----------
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --upgrade pip && \
+RUN pip3 install --upgrade pip && \
     pip3 install -r requirements.txt && \
-    # Ensure marker CLI commands are available
-    which marker || echo "marker command not found" && \
-    which marker_single || echo "marker_single command not found" && \
-    python3 -c "import marker; print('Marker package installed successfully')"
+    # Install marker-pdf separately to handle potential conflicts
+    (pip3 install marker-pdf --no-deps --force-reinstall || echo "Marker installation skipped") && \
+    pip3 install torch torchvision transformers --upgrade && \
+    # Verify installation
+    (python3 -c "import marker; print('Marker imported successfully')" || echo "Marker import failed") && \
+    (python3 -c "from marker.converters.pdf import PdfConverter; print('PdfConverter available')" || echo "PdfConverter failed") && \
+    # Verify critical packages
+    (python3 -c "import torch; print('PyTorch installed')" || echo "PyTorch failed") && \
+    (python3 -c "import uvicorn; print('Uvicorn installed')" || echo "Uvicorn failed") && \
+    (python3 -c "import fastapi; print('FastAPI installed')" || echo "FastAPI failed")
 
 # ---------- Pre-fetch runtime assets ----------
-RUN --mount=type=cache,target=/root/.cache/pip \
+# Install NLTK if not already installed and download required data
+RUN pip3 install nltk && \
     python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]" && \
-    python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')"
+    (python3 -c "from marker.util import download_font; download_font(); print('Marker font pre-downloaded.')" || echo "Marker font download skipped")
 
 # ---------- GPU optimization environment variables ----------
 ENV MARKER_NUM_WORKERS=4 \
@@ -72,4 +84,4 @@ RUN useradd --create-home --shell /bin/bash app \
 EXPOSE 8001
 
 
-CMD bash -c "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && chown -R app:app /app/marker_output /home/app && echo 'Checking CUDA availability...' && python3 -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"CUDA device count: {torch.cuda.device_count()}\"); print(f\"Current device: {torch.cuda.current_device() if torch.cuda.is_available() else None}\")' && echo 'Preloading marker models for GPU optimization...' && python3 /app/preload_models.py && echo 'Starting API server...' && su - app -c 'cd /app && CUDA_VISIBLE_DEVICES=0 python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001'"
+CMD ["bash", "-c", "mkdir -p /app/marker_output /home/app/.cache/datalab /home/app/.cache/surya && chmod -R 777 /app/marker_output /home/app/.cache && echo 'Starting API server...' && python3 preload_models.py && python3 -m uvicorn api_server:app --host 0.0.0.0 --port 8001 --workers 2"]

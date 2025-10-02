@@ -210,7 +210,9 @@ class Config:
     SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp']
     SUPPORTED_WORD_FORMATS = ['.docx', '.doc']
     SUPPORTED_EXCEL_FORMATS = ['.xlsx', '.xls']
-    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS
+    SUPPORTED_POWERPOINT_FORMATS = ['.pptx', '.ppt']
+    SUPPORTED_TEXT_FORMATS = ['.txt', '.md', '.csv', '.html', '.htm']
+    SUPPORTED_DOCUMENT_FORMATS = ['.pdf'] + SUPPORTED_IMAGE_FORMATS + SUPPORTED_WORD_FORMATS + SUPPORTED_EXCEL_FORMATS + SUPPORTED_POWERPOINT_FORMATS + SUPPORTED_TEXT_FORMATS
     
     # Chunking parameters
     MAX_CHUNK_SIZE = 2500
@@ -272,6 +274,45 @@ class DocumentProcessor:
             logger.error(f"Failed to convert image to PDF: {e}")
             raise
     
+    def _process_text_file(self, file_path: str) -> Optional[str]:
+        """
+        Process text-based files (txt, md, csv, html).
+
+        Args:
+            file_path: Path to the text file
+
+        Returns:
+            Markdown content or None if failed
+        """
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+
+            if file_ext in ['.txt', '.md']:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                if file_ext == '.txt':
+                    # Convert plain text to markdown
+                    return f"# Document\n\n{content}"
+                return content
+
+            elif file_ext == '.csv':
+                import pandas as pd
+                df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
+                return f"# CSV Data\n\n{df.to_markdown(index=False)}"
+
+            elif file_ext in ['.html', '.htm']:
+                from bs4 import BeautifulSoup
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    soup = BeautifulSoup(f.read(), 'html.parser')
+                    text = soup.get_text(separator='\n', strip=True)
+                return f"# HTML Document\n\n{text}"
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to process text file {file_path}: {e}")
+            return None
+
     async def _upload_to_marker(self, file_path: str, webhook_url: str) -> Optional[str]:
         """
         Upload a file to the Marker API for processing using webhook.
@@ -375,6 +416,12 @@ class DocumentProcessor:
         Returns:
             Markdown content or None if failed
         """
+        # Check file extension - Marker has issues with PowerPoint files containing WMF images
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext in ['.ppt', '.pptx', '.pps']:
+            logger.info(f"Skipping Marker for PowerPoint files due to WMF image issues: {file_ext}")
+            return None
+
         # Check if GPU is enabled
         gpu_enabled = os.getenv("GPU_ENABLED", "false").lower() == "true"
         if not gpu_enabled:
@@ -409,10 +456,10 @@ class DocumentProcessor:
             config = {
                 # GPU optimization - maximize parallel processing
                 "batch_multiplier": 12,  # Increased for better GPU utilization
-                "ocr_batch_size": 64,  # Much larger OCR batch for GPU efficiency
-                "layout_batch_size": 16,  # Larger layout batch
-                "table_rec_batch_size": 16,  # Larger table batch
-                "detection_batch_size": 32,  # Larger detection batch
+                "ocr_batch_size": 32,  # Much larger OCR batch for GPU efficiency
+                "layout_batch_size": 8,  # Larger layout batch
+                "table_rec_batch_size": 8,  # Larger table batch
+                "detection_batch_size": 16,  # Larger detection batch
                 
                 # OCR optimizations - keep GPU busy
                 # "ocr_all_pages": True,  # Process all pages in parallel
@@ -429,7 +476,7 @@ class DocumentProcessor:
                 # Parallel processing - maximize GPU usage
                 "workers": 8,  # More parallel workers
                 "ray_workers": 8,  # Ray parallel processing
-                "max_parallel_pages": 8,  # Process multiple pages simultaneously
+                "max_parallel_pages": 4,  # Process multiple pages simultaneously
                 
                 # GPU memory optimization
                 "gpu_memory_fraction": 0.8,  # Use 80% of GPU memory
@@ -487,10 +534,10 @@ async def convert_to_markdown(
     webhook_url: Optional[str] = None
 ) -> Optional[str]:
     """
-    Convert a PDF or image file to markdown format.
+    Convert a document to markdown format using Marker GPU processing.
 
     Args:
-        file_path: Path to the input file (PDF or supported image format)
+        file_path: Path to the input file
         use_local: Whether to use local Marker (True) or API (False). Defaults to True.
         webhook_url: URL for webhook callback (required if use_local is False)
 
@@ -501,7 +548,7 @@ async def convert_to_markdown(
         FileNotFoundError: If the input file doesn't exist
         ValueError: If the file format is not supported
     """
-    # Validate input
+    # Input validation and normalization
     file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
     file_path = os.path.abspath(file_path)
 
@@ -512,36 +559,127 @@ async def convert_to_markdown(
     if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
 
-    # Process file
-    processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
+    processor = DocumentProcessor()
 
-    # Default to local processing if use_local is not specified
-    if use_local is None:
-        use_local = True
+    # Route 1: Text files (direct processing)
+    if file_ext in Config.SUPPORTED_TEXT_FORMATS:
+        logger.info("Processing text-based file")
+        markdown_content = processor._process_text_file(file_path)
+        if not markdown_content:
+            raise ValueError(f"Failed to process text file: {file_path}")
+        return markdown_content
 
-    # Choose between local and API processing
+    # Route 2: .doc files (convert to .docx for Marker)
+    if file_ext == '.doc':
+        file_path = await _convert_doc_to_docx(file_path)
+        if not file_path:
+            return None
+        file_ext = '.docx'
+
+    # Route 3: .ppt files (convert to .pptx for Marker)
+    if file_ext == '.ppt':
+        file_path = await _convert_ppt_to_pptx(file_path)
+        if not file_path:
+            return None
+        file_ext = '.pptx'
+
+    # Route 4: Marker GPU processing (PDF, images, .docx, .pptx, .xlsx)
+    use_local = use_local if use_local is not None else True
+
     if use_local:
         logger.info("Using local Marker for processing")
         markdown_content = processor._process_with_local_marker(file_path)
-
-        # If local processing fails, raise error instead of fallback
-        if markdown_content is None:
+        if not markdown_content:
             raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
     else:
         if not webhook_url:
             raise ValueError("webhook_url is required when use_local is False")
-
         logger.info("Using Marker API with webhook for processing")
-        # Upload and wait for webhook response
         markdown_content = await processor._upload_to_marker(file_path, webhook_url)
         if not markdown_content:
             return None
 
-    if not markdown_content:
-        return None
-
     return markdown_content
+
+
+# Helper functions for convert_to_markdown
+async def _convert_doc_to_docx(file_path: str) -> Optional[str]:
+    """Convert .doc to .docx for Marker processing."""
+    logger.info("Converting .doc to .docx for Marker GPU processing")
+
+    try:
+        import subprocess
+        import tempfile
+
+        temp_dir = tempfile.mkdtemp()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        docx_file = os.path.join(temp_dir, f"{base_name}.docx")
+
+        cmd = ['libreoffice', '--headless', '--convert-to', 'docx', '--outdir', temp_dir, file_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode == 0 and os.path.exists(docx_file):
+            logger.info(f"Successfully converted .doc to .docx: {docx_file}")
+            return docx_file
+        else:
+            logger.error(f"LibreOffice conversion failed: {result.stderr}")
+            return _process_with_fast_extractor(file_path, '.doc')
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.doc')
+    except Exception as e:
+        logger.error(f".doc to .docx conversion failed: {e}, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.doc')
+
+
+async def _convert_ppt_to_pptx(file_path: str) -> Optional[str]:
+    """Convert .ppt to .pptx for Marker processing."""
+    logger.info("Converting .ppt to .pptx for Marker GPU processing")
+
+    try:
+        import subprocess
+        import tempfile
+
+        temp_dir = tempfile.mkdtemp()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        pptx_file = os.path.join(temp_dir, f"{base_name}.pptx")
+
+        cmd = ['libreoffice', '--headless', '--convert-to', 'pptx', '--outdir', temp_dir, file_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode == 0 and os.path.exists(pptx_file):
+            logger.info(f"Successfully converted .ppt to .pptx: {pptx_file}")
+            return pptx_file
+        else:
+            logger.error(f"LibreOffice conversion failed: {result.stderr}")
+            return _process_with_fast_extractor(file_path, '.ppt')
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice conversion timed out, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.ppt')
+    except Exception as e:
+        logger.error(f".ppt to .pptx conversion failed: {e}, falling back to FastFileExtractor")
+        return _process_with_fast_extractor(file_path, '.ppt')
+
+
+def _process_with_fast_extractor(file_path: str, file_ext: str) -> Optional[str]:
+    """Process file with FastFileExtractor."""
+    logger.info(f"Processing {file_ext} file with FastFileExtractor")
+
+    try:
+        from integration import FastFileExtractor
+        extractor = FastFileExtractor(include_metadata=False)
+        result = extractor.extract(file_path)
+
+        if result['success']:
+            return result['markdown']
+        else:
+            raise ValueError(f"FastFileExtractor failed: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        logger.error(f"FastFileExtractor failed for {file_ext}: {e}")
+        raise ValueError(f"Failed to process {file_ext} file: {e}")
 
 
 # new class and functions for fast conversion 
@@ -650,44 +788,483 @@ class FastFileExtractor:
                 markdown += f"\n{{page_{i}}}\n---\n\n{doc.page_content}\n\n"
 
             return markdown, {'total_pages': len(docs), 'loader': 'PyMuPDF'}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"PyMuPDFLoader failed: {e}")
             # Fallback to Unstructured if PyMuPDF fails
-            loader = UnstructuredPDFLoader(file_path, mode="single", strategy="fast")
-            docs = loader.load()
-            markdown = self._format_documents(docs)
-            return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+            try:
+                loader = UnstructuredPDFLoader(
+                    file_path,
+                    mode="single",
+                    strategy="fast"
+                )
+                docs = loader.load()
+                markdown = self._format_documents(docs)
+                return markdown, {'total_elements': len(docs), 'loader': 'Unstructured'}
+            except Exception as e2:
+                logger.error(f"UnstructuredPDFLoader also failed: {e2}")
+                # Last resort: Try basic text extraction
+                try:
+                    import PyPDF2
+                    markdown = "# PDF Document\n\n"
+                    with open(file_path, 'rb') as file:
+                        reader = PyPDF2.PdfReader(file)
+                        for page_num, page in enumerate(reader.pages):
+                            text = page.extract_text()
+                            if text:
+                                markdown += f"\n## Page {page_num + 1}\n\n{text}\n\n"
+                    return markdown, {'total_pages': len(reader.pages), 'loader': 'PyPDF2'}
+                except Exception as e3:
+                    logger.error(f"PyPDF2 also failed: {e3}")
+                    raise e2
     
     def _extract_word(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from Word document."""
-        loader = UnstructuredWordDocumentLoader(file_path, mode="single")
-        docs = loader.load()
-        return self._format_documents(docs), {'total_elements': len(docs)}
+        """Extract content from Word document with multiple fallbacks."""
+        # First, try using local processing without API calls
+        try:
+            loader = UnstructuredWordDocumentLoader(
+                file_path,
+                mode="single",
+                strategy="fast",  # Use fast local strategy
+                hi_res_model_name=None,  # Disable high-res model that might use API
+                use_api=False  # Explicitly disable API usage if supported
+            )
+            docs = loader.load()
+            return self._format_documents(docs), {'total_elements': len(docs)}
+        except Exception as e:
+            logger.warning(f"UnstructuredWordDocumentLoader failed: {e}")
+
+        # Fallback 1: Try using python-docx directly for .docx files
+        if file_path.endswith('.docx'):
+            try:
+                import docx
+                doc = docx.Document(file_path)
+                markdown = "# Word Document\n\n"
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        markdown += paragraph.text + "\n\n"
+
+                # Also extract tables
+                for table in doc.tables:
+                    markdown += "\n"
+                    for row in table.rows:
+                        markdown += "| " + " | ".join([cell.text.strip() for cell in row.cells]) + " |\n"
+                        if table.rows.index(row) == 0:
+                            markdown += "|" + "---|" * len(row.cells) + "\n"
+                    markdown += "\n"
+
+                return markdown, {'total_elements': len(doc.paragraphs), 'loader': 'python-docx'}
+            except Exception as e2:
+                logger.error(f"python-docx fallback failed: {e2}")
+
+        # Fallback 2: Try extracting raw XML text for corrupted .docx
+        if file_path.endswith('.docx'):
+            try:
+                import zipfile
+                import xml.etree.ElementTree as ET
+
+                markdown = "# Word Document (Text Recovery)\n\n"
+                with zipfile.ZipFile(file_path, 'r') as docx:
+                    # Extract text from document.xml
+                    with docx.open('word/document.xml') as xml_file:
+                        tree = ET.parse(xml_file)
+                        root = tree.getroot()
+
+                        # Extract all text elements
+                        namespace = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                        paragraphs = root.findall('.//w:t', namespace)
+
+                        current_paragraph = []
+                        for elem in root.findall('.//w:p', namespace):
+                            texts = elem.findall('.//w:t', namespace)
+                            para_text = ' '.join([t.text for t in texts if t.text])
+                            if para_text.strip():
+                                markdown += para_text.strip() + "\n\n"
+
+                return markdown, {'total_elements': 1, 'loader': 'xml-recovery'}
+            except Exception as e3:
+                logger.error(f"XML extraction fallback failed: {e3}")
+
+        # Fallback 3: For .doc files, try using antiword or other text extraction
+        if file_path.endswith('.doc'):
+            try:
+                import subprocess
+                result = subprocess.run(['antiword', file_path], capture_output=True, text=True, timeout=30)
+                if result.returncode == 0 and result.stdout:
+                    markdown = "# Word Document\n\n" + result.stdout
+                    return markdown, {'total_elements': 1, 'loader': 'antiword'}
+            except Exception as e4:
+                logger.error(f"antiword fallback failed: {e4}")
+
+        # Last resort: Try to extract any readable text
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                # Clean up binary garbage
+                import string
+                printable = set(string.printable)
+                content = ''.join(filter(lambda x: x in printable, content))
+                if len(content) > 100:  # Only if we got meaningful content
+                    markdown = "# Document (Text Recovery)\n\n" + content
+                    return markdown, {'total_elements': 1, 'loader': 'text-recovery'}
+        except Exception as e5:
+            logger.error(f"Text recovery failed: {e5}")
+
+        # If all fallbacks fail, raise error
+        raise ValueError(f"Failed to extract Word document after all fallback attempts")
     
     def _extract_excel(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from Excel file."""
-        loader = UnstructuredExcelLoader(file_path, mode="single")
-        docs = loader.load()
-        
-        markdown = "# Excel Document\n\n"
-        for doc in docs:
-            content = doc.page_content
-            if '\t' in content:
-                markdown += self._format_table(content)
+        """Extract content from Excel file with robust error handling."""
+        logger.info(f"Processing Excel file: {file_path}")
+
+        # Try multiple approaches to handle corrupted Excel files
+
+        # Approach 1: Try pandas with different engines
+        try:
+            import pandas as pd
+
+            # Try reading with openpyxl engine first
+            try:
+                xls = pd.ExcelFile(file_path, engine='openpyxl')
+            except:
+                # If openpyxl fails, try xlrd for older formats
+                try:
+                    xls = pd.ExcelFile(file_path, engine='xlrd')
+                except:
+                    # Last resort: try calamine engine (if available)
+                    try:
+                        xls = pd.ExcelFile(file_path, engine='calamine')
+                    except:
+                        raise
+
+            markdown = "# Excel Document\n\n"
+
+            for sheet_name in xls.sheet_names:
+                try:
+                    df = pd.read_excel(xls, sheet_name=sheet_name)
+                    markdown += f"## Sheet: {sheet_name}\n\n"
+
+                    if not df.empty:
+                        # Limit columns and rows for very large sheets
+                        if len(df) > 1000:
+                            df = df.head(1000)
+                            markdown += "*Note: Showing first 1000 rows*\n\n"
+                        if len(df.columns) > 50:
+                            df = df.iloc[:, :50]
+                            markdown += "*Note: Showing first 50 columns*\n\n"
+
+                        markdown += df.to_markdown(index=False) + "\n\n"
+                    else:
+                        markdown += "*(Empty sheet)*\n\n"
+                except Exception as sheet_error:
+                    markdown += f"## Sheet: {sheet_name}\n\n*(Error reading sheet: {str(sheet_error)})*\n\n"
+                    logger.warning(f"Failed to read sheet {sheet_name}: {sheet_error}")
+
+            return markdown, {'total_sheets': len(xls.sheet_names), 'loader': 'pandas'}
+
+        except ImportError:
+            logger.error("pandas not installed for Excel processing")
+        except Exception as e:
+            logger.error(f"pandas failed: {e}")
+
+            # Last resort: try openpyxl directly for .xlsx files
+            if file_path.endswith('.xlsx'):
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(file_path, read_only=True, data_only=True)
+                    markdown = "# Excel Document\n\n"
+
+                    for sheet_name in wb.sheetnames:
+                        sheet = wb[sheet_name]
+                        markdown += f"## Sheet: {sheet_name}\n\n"
+
+                        # Extract data from sheet
+                        data = []
+                        for row in sheet.iter_rows(values_only=True):
+                            if any(cell is not None for cell in row):
+                                data.append([str(cell) if cell is not None else "" for cell in row])
+
+                        if data:
+                            # Format as table
+                            markdown += "| " + " | ".join(data[0]) + " |\n"
+                            markdown += "|" + "---|" * len(data[0]) + "\n"
+                            for row in data[1:]:
+                                markdown += "| " + " | ".join(row) + " |\n"
+                            markdown += "\n"
+                        else:
+                            markdown += "*(Empty sheet)*\n\n"
+
+                    wb.close()
+                    return markdown, {'total_sheets': len(wb.sheetnames), 'loader': 'openpyxl'}
+                except ImportError:
+                    logger.error("openpyxl not installed for Excel fallback")
+                except Exception as e2:
+                    logger.error(f"openpyxl fallback failed: {e2}")
+
+        # Fallback 2: Try converting Excel to CSV using LibreOffice, then process as CSV
+        try:
+            logger.info("Attempting Excel to CSV conversion using LibreOffice...")
+            import subprocess
+            import tempfile
+
+            # Create temp directory for conversion
+            temp_dir = tempfile.mkdtemp()
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+
+            # Convert Excel to CSV using LibreOffice
+            cmd = [
+                'libreoffice',
+                '--headless',
+                '--convert-to', 'csv',
+                '--outdir', temp_dir,
+                file_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+            if result.returncode == 0:
+                # Look for the converted CSV file
+                csv_file = os.path.join(temp_dir, f"{base_name}.csv")
+                if os.path.exists(csv_file):
+                    logger.info(f"Successfully converted Excel to CSV: {csv_file}")
+
+                    # Process the CSV file
+                    try:
+                        import pandas as pd
+                        df = pd.read_csv(csv_file, encoding='utf-8', on_bad_lines='skip')
+                        markdown = "# Excel Document (Converted from CSV)\n\n"
+
+                        if not df.empty:
+                            # Limit very large datasets
+                            if len(df) > 1000:
+                                df = df.head(1000)
+                                markdown += "*Note: Showing first 1000 rows*\n\n"
+                            if len(df.columns) > 50:
+                                df = df.iloc[:, :50]
+                                markdown += "*Note: Showing first 50 columns*\n\n"
+
+                            markdown += df.to_markdown(index=False) + "\n\n"
+                        else:
+                            markdown += "*(No data found)*\n\n"
+
+                        # Clean up temp files
+                        try:
+                            os.unlink(csv_file)
+                            os.rmdir(temp_dir)
+                        except:
+                            pass
+
+                        return markdown, {'total_sheets': 1, 'loader': 'libreoffice-csv'}
+
+                    except Exception as csv_error:
+                        logger.error(f"Failed to process converted CSV: {csv_error}")
+                        # Clean up and continue to next fallback
+                        try:
+                            os.unlink(csv_file)
+                            os.rmdir(temp_dir)
+                        except:
+                            pass
             else:
-                markdown += content + "\n\n"
-        
-        return markdown, {'total_sheets': len(docs)}
+                logger.error(f"LibreOffice conversion failed: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            logger.error("LibreOffice conversion timed out")
+        except Exception as libre_error:
+            logger.error(f"LibreOffice conversion error: {libre_error}")
+
+        # Fallback 3: Try using xlwings for complex Excel files (Windows only)
+        if os.name == 'nt':  # Windows only
+            try:
+                logger.info("Attempting xlwings extraction (Windows only)...")
+                import xlwings as xw
+
+                app = xw.App(visible=False)
+                wb = app.books.open(file_path)
+                markdown = "# Excel Document (xlwings extraction)\n\n"
+
+                for sheet in wb.sheets:
+                    try:
+                        markdown += f"## Sheet: {sheet.name}\n\n"
+
+                        # Get used range
+                        used_range = sheet.used_range
+                        if used_range:
+                            # Convert to pandas DataFrame for easier handling
+                            values = used_range.value
+                            if values:
+                                import pandas as pd
+                                if isinstance(values[0], list):
+                                    df = pd.DataFrame(values)
+                                else:
+                                    df = pd.DataFrame([values])
+
+                                # Limit size
+                                if len(df) > 1000:
+                                    df = df.head(1000)
+                                    markdown += "*Note: Showing first 1000 rows*\n\n"
+
+                                markdown += df.to_markdown(index=False) + "\n\n"
+                            else:
+                                markdown += "*(Empty sheet)*\n\n"
+                        else:
+                            markdown += "*(Empty sheet)*\n\n"
+
+                    except Exception as sheet_error:
+                        markdown += f"*(Error reading sheet {sheet.name}: {str(sheet_error)})*\n\n"
+                        logger.warning(f"xlwings failed to read sheet {sheet.name}: {sheet_error}")
+
+                wb.close()
+                app.quit()
+
+                return markdown, {'total_sheets': len(wb.sheets), 'loader': 'xlwings'}
+
+            except ImportError:
+                logger.warning("xlwings not available (Windows only or not installed)")
+            except Exception as xlwings_error:
+                logger.error(f"xlwings extraction failed: {xlwings_error}")
+                try:
+                    # Ensure Excel app is closed
+                    if 'app' in locals():
+                        app.quit()
+                except:
+                    pass
+
+        # Fallback 4: Raw text extraction as last resort
+        try:
+            logger.info("Attempting raw text extraction from Excel file...")
+            # For .xlsx files, try to extract text from the zip archive
+            if file_path.endswith('.xlsx'):
+                import zipfile
+                import xml.etree.ElementTree as ET
+
+                markdown = "# Excel Document (Raw Text Extraction)\n\n"
+                with zipfile.ZipFile(file_path, 'r') as xlsx:
+                    # Try to extract from shared strings and worksheets
+                    try:
+                        with xlsx.open('xl/sharedStrings.xml') as shared_strings:
+                            tree = ET.parse(shared_strings)
+                            root = tree.getroot()
+
+                            # Extract text from shared strings
+                            strings = []
+                            for si in root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t'):
+                                if si.text:
+                                    strings.append(si.text)
+
+                            if strings:
+                                markdown += "**Extracted Text Content:**\n\n"
+                                markdown += " | ".join(strings[:100])  # Limit to first 100 strings
+                                if len(strings) > 100:
+                                    markdown += f"\n\n*(... and {len(strings) - 100} more entries)*"
+                                markdown += "\n\n"
+
+                    except:
+                        pass
+
+                    # Also try to extract from worksheet files
+                    worksheet_files = [f for f in xlsx.namelist() if f.startswith('xl/worksheets/')]
+                    for ws_file in worksheet_files[:3]:  # Limit to first 3 worksheets
+                        try:
+                            with xlsx.open(ws_file) as worksheet:
+                                tree = ET.parse(worksheet)
+                                root = tree.getroot()
+
+                                # Extract cell values
+                                values = []
+                                for v in root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v'):
+                                    if v.text:
+                                        values.append(v.text)
+
+                                if values:
+                                    markdown += f"**Worksheet {ws_file}:**\n\n"
+                                    markdown += " | ".join(values[:50])  # Limit to first 50 values
+                                    markdown += "\n\n"
+                        except:
+                            continue
+
+                if len(markdown) > 50:  # If we extracted some content
+                    return markdown, {'total_sheets': len(worksheet_files), 'loader': 'raw-xml'}
+
+        except Exception as raw_error:
+            logger.error(f"Raw text extraction failed: {raw_error}")
+
+        # If all fallbacks fail, raise the original error
+        raise ValueError(f"Failed to extract Excel file after all fallback attempts: {e}")
     
     def _extract_powerpoint(self, file_path: str) -> Tuple[str, Dict]:
-        """Extract content from PowerPoint presentation."""
-        loader = UnstructuredPowerPointLoader(file_path, mode="single")
-        docs = loader.load()
-        
-        markdown = "# PowerPoint Presentation\n\n"
-        for doc in docs:
-            markdown += doc.page_content + "\n\n"
-        
-        return markdown, {'total_slides': len(docs)}
+        """Extract content from PowerPoint presentation using python-pptx directly."""
+        logger.info(f"Processing PowerPoint file: {file_path}")
+
+        # Use python-pptx directly to avoid API calls
+        if file_path.endswith('.pptx'):
+            try:
+                from pptx import Presentation
+
+                prs = Presentation(file_path)
+                markdown = ""
+
+                for slide_num, slide in enumerate(prs.slides, 1):
+                    # Extract text from all shapes
+                    slide_content = ""
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text.strip():
+                            slide_content += shape.text.strip() + "\n\n"
+
+                        # Handle tables
+                        if shape.has_table:
+                            table = shape.table
+                            for row_idx, row in enumerate(table.rows):
+                                slide_content += "| " + " | ".join([cell.text for cell in row.cells]) + " |\n"
+                                if row_idx == 0:
+                                    slide_content += "|" + "---|" * len(row.cells) + "\n"
+                            slide_content += "\n"
+
+                    # Only add slide content if it has text
+                    if slide_content.strip():
+                        markdown += slide_content
+
+                return markdown, {'total_slides': len(prs.slides), 'loader': 'python-pptx'}
+
+            except Exception as e:
+                logger.error(f"python-pptx failed: {e}")
+
+                # Fallback to UnstructuredPowerPointLoader as last resort
+                try:
+                    loader = UnstructuredPowerPointLoader(
+                        file_path,
+                        mode="single",
+                        strategy="fast"
+                    )
+                    docs = loader.load()
+
+                    markdown = ""
+                    for doc in docs:
+                        markdown += doc.page_content + "\n\n"
+
+                    return markdown, {'total_elements': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
+
+                except Exception as e2:
+                    logger.error(f"UnstructuredPowerPointLoader also failed: {e2}")
+                    raise ValueError(f"Failed to extract PowerPoint file: {e}")
+
+        # For .ppt files (older format), try UnstructuredPowerPointLoader
+        else:
+            try:
+                loader = UnstructuredPowerPointLoader(
+                    file_path,
+                    mode="single",
+                    strategy="fast"
+                )
+                docs = loader.load()
+
+                markdown = ""
+                for doc in docs:
+                    markdown += doc.page_content + "\n\n"
+
+                return markdown, {'total_elements': len(docs), 'loader': 'UnstructuredPowerPointLoader'}
+
+            except Exception as e:
+                logger.error(f"Failed to extract .ppt file: {e}")
+                raise ValueError(f"Failed to extract PowerPoint file: {e}")
     
     def _extract_simple(self, file_path: str, file_type: str) -> Tuple[str, Dict]:
         """Extract content from simple file types (text, markdown, HTML, CSV)."""
@@ -701,13 +1278,44 @@ class FastFileExtractor:
             return f"# Text Document\n\n{content}", {'loader': 'Direct'}
         
         elif file_type == 'html':
-            loader = UnstructuredHTMLLoader(file_path, mode="single")
-            docs = loader.load()
-            return self._format_documents(docs), {'loader': 'HTML'}
+            try:
+                loader = UnstructuredHTMLLoader(
+                    file_path,
+                    mode="single"
+                )
+                docs = loader.load()
+                return self._format_documents(docs), {'loader': 'HTML'}
+            except Exception as e:
+                logger.warning(f"UnstructuredHTMLLoader failed: {e}")
+                # Fallback: Read HTML directly
+                from bs4 import BeautifulSoup
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    soup = BeautifulSoup(f.read(), 'html.parser')
+                    # Extract text
+                    text = soup.get_text(separator='\n', strip=True)
+                    return f"# HTML Document\n\n{text}", {'loader': 'BeautifulSoup'}
         
         elif file_type == 'csv':
-            loader = UnstructuredCSVLoader(file_path, mode="single")
-            docs = loader.load()
+            try:
+                loader = UnstructuredCSVLoader(
+                    file_path,
+                    mode="single"
+                )
+                docs = loader.load()
+            except Exception as e:
+                logger.warning(f"UnstructuredCSVLoader failed: {e}")
+                # Fallback: Use pandas
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(file_path)
+                    markdown = "# CSV Data\n\n"
+                    markdown += df.to_markdown(index=False) if not df.empty else "*(Empty CSV)*"
+                    return markdown, {'loader': 'pandas'}
+                except Exception as e2:
+                    # Last resort: Read as text
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    return self._format_table(content), {'loader': 'text'}
             markdown = "# CSV Data\n\n"
             for doc in docs:
                 markdown += self._format_table(doc.page_content)
@@ -725,7 +1333,15 @@ class FastFileExtractor:
         if not loader_class:
             raise ValueError(f"No loader available for {file_type}")
         
-        loader = loader_class(file_path, mode="single")
+        # Try with minimal parameters
+        try:
+            loader = loader_class(
+                file_path,
+                mode="single"
+            )
+        except TypeError:
+            # Some loaders might not accept mode parameter
+            loader = loader_class(file_path)
         docs = loader.load()
         return self._format_documents(docs), {'loader': file_type.upper()}
     
@@ -787,71 +1403,58 @@ class FastFileExtractor:
 
 def fast_convert_to_markdown(
     file_path: str,
-    include_metadata: Optional[bool] = True
+    include_metadata: Optional[bool] = False
 ) -> Optional[str]:
     """
     Fast convert a document file to markdown format using FastFileExtractor.
 
     Args:
-        file_path: Path to the input file (supports PDF, Word, Excel, PowerPoint, images, etc.)
+        file_path: Path to the input file
         include_metadata: Whether to include processing metadata in output
-        
+
     Returns:
         Markdown content as string, or None if conversion failed
-        
+
     Raises:
         FileNotFoundError: If the input file doesn't exist
         ValueError: If the file format is not supported
     """
-    # Validate input
+    # Input validation and normalization
     file_path = os.path.expanduser(file_path.strip().strip('"').strip("'"))
     file_path = os.path.abspath(file_path)
-    
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    
+
     file_ext = os.path.splitext(file_path)[1].lower()
     if file_ext not in FastFileExtractor.FILE_LOADERS:
         supported_formats = list(FastFileExtractor.FILE_LOADERS.keys())
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {supported_formats}")
-    
-    # Initialize fast extractor
-    extractor = FastFileExtractor(
-        include_metadata=include_metadata
-    )
 
     logger.info(f"Fast processing file: {file_path}")
-    
-    # Extract content
+
+    # Initialize and run fast extraction
     try:
+        extractor = FastFileExtractor(include_metadata=include_metadata)
         result = extractor.extract(file_path)
-        
+
         if not result['success']:
             logger.error(f"Fast conversion failed: {result.get('error', 'Unknown error')}")
             return None
-        
+
         markdown_content = result['markdown']
-        processing_time = result['processing_time']
-        
         if not markdown_content:
             logger.error("Fast conversion returned empty content")
             return None
-        
+
+        processing_time = result['processing_time']
         logger.info(f"Fast conversion completed in {processing_time:.2f}s")
-        
-        # Optionally append metadata to markdown
-        if include_metadata and result.get('metadata'):
-            metadata = result['metadata']
-            markdown_content += "\n\n---\n\n"
-            markdown_content += "## Processing Metadata\n\n"
-            for key, value in metadata.items():
-                markdown_content += f"- **{key.replace('_', ' ').title()}**: {value}\n"
-        
+
+        return markdown_content
+
     except Exception as e:
         logger.error(f"Fast conversion error: {e}")
         return None
-
-    return markdown_content
 
 def chunk_markdown(
     markdown_input: Union[str, Path],
@@ -1327,7 +1930,7 @@ def fast_doc_to_weaviate(
     document_id: str,
     tenant_id: str,
     client: Optional[object] = None,
-    include_metadata: Optional[bool] = True
+    include_metadata: Optional[bool] = False
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
