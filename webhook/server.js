@@ -218,7 +218,8 @@ app.post('/webhook', async (req, res) => {
       }
       
       // Auto-add API key to datalab.to URLs
-      const datalabApiKey = 'QP4dh9aa9gzIbKxJ0Xj9Rz0anAyqYxGgIajQqvuGDhA';
+      const datalabApiKey = process.env.MARKER_API_KEY || 'QP4dh9aa9gzIbKxJ0Xj9Rz0anAyqYxGgIajQqvuGDhA';
+      console.log(`🔑 Using MARKER_API_KEY: ${datalabApiKey.substring(0, 10)}...`);
       urlsToExtract.forEach((url, index) => {
         if (url.includes('datalab.to') && !url.includes('api_key=')) {
           const separator = url.includes('?') ? '&' : '?';

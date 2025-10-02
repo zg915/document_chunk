@@ -34,4 +34,5 @@ services:
     environment:
       - PORT=3001
       - API_CALLBACK_URL=http://document-api:8001/api-callback
+      - MARKER_API_KEY=${MARKER_API_KEY}
     restart: unless-stopped
