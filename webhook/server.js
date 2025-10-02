@@ -298,37 +298,7 @@ app.post('/webhook', async (req, res) => {
           extractedResults.push(extractedContent);
           extractedData.push(extractedContent);
           
-          console.log(`✅ Successfully extracted data from: ${url}`);
-          
-          // Display extracted data in terminal
-          console.log('\n' + '='.repeat(80));
-          console.log(`📄 EXTRACTED DATA FROM: ${url}`);
-          console.log('='.repeat(80));
-          console.log(`Type: ${extractedContent.type}`);
-          console.log(`Timestamp: ${extractedContent.timestamp}`);
-          console.log('-'.repeat(40));
-          
-          if (extractedContent.type === 'html') {
-            console.log(`Title: ${extractedContent.title}`);
-            console.log(`Description: ${extractedContent.description}`);
-            console.log(`\nText Content (first 500 chars):`);
-            console.log(extractedContent.text.substring(0, 500) + '...');
-            console.log(`\nLinks found: ${extractedContent.links.length}`);
-            console.log(`Images found: ${extractedContent.images.length}`);
-          } else if (extractedContent.type === 'json') {
-            console.log('JSON Data:');
-            console.log(JSON.stringify(extractedContent.data, null, 2));
-          } else if (extractedContent.type === 'text') {
-            console.log('Text Content:');
-            console.log(extractedContent.content.substring(0, 1000) + '...');
-          } else if (extractedContent.type === 'error') {
-            console.log(`❌ Error: ${extractedContent.error}`);
-          } else {
-            console.log('Raw Content:');
-            console.log(JSON.stringify(extractedContent, null, 2));
-          }
-          
-          console.log('='.repeat(80) + '\n');
+          console.log(`✅ Successfully extracted data from: ${url} (${extractedContent.type}, ${extractedContent.content?.length || 0} chars)`);
           
           // Send callback to API if this is a datalab processing result
           await sendCallbackToAPI(extractedContent, webhookPayload);
