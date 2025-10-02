@@ -3,21 +3,11 @@ fastapi==0.104.1
 uvicorn[standard]>=0.30.0
 python-multipart==0.0.6
 
-# PyTorch and vision (GPU support)
---extra-index-url https://download.pytorch.org/whl/cu121
-torch
-torchvision
-transformers>=4.36.0
-
 # Document processing dependencies
 requests==2.31.0
 tiktoken==0.5.1
 python-dotenv==1.0.0
 Pillow==10.2.0
-
-
-# Marker for GPU-accelerated PDF processing
-marker-pdf[gpu]==1.9.2
 
 # Unstructured document processing (with all features)
 unstructured[all-docs]==0.15.7
@@ -41,9 +31,6 @@ pytesseract>=0.3.10
 pydantic>=2.8.0
 pathlib2==2.3.7
 markdown==3.5.1
-
-# Marker for document processing (install separately due to Pillow conflicts)
-# marker-pdf
 
 # Additional packages for fast conversion and processing
 pi-heif

@@ -20,21 +20,6 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Third-party imports
-# GPU optimizations - set before importing torch-based libraries
-os.environ["OMP_NUM_THREADS"] = "1"
-try:
-    import torch
-    if torch.cuda.is_available():
-        torch.set_num_threads(1)
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        print(f"GPU optimizations enabled: {torch.cuda.get_device_name(0)}")
-except Exception as e:
-    print(f"GPU optimizations failed, continuing without: {e}")
-    torch = None
-
-
 import requests
 import tiktoken
 from dotenv import load_dotenv
@@ -221,15 +206,7 @@ class Config:
     # API settings
     MAX_RETRIES = 30
     RETRY_DELAY = 10
-    
-    # Local Marker settings - using marker instead of marker_single for batch processing
-    LOCAL_MARKER_COMMAND = "marker"  # Use marker for consistent batch processing
-    LOCAL_MARKER_OUTPUT_DIR = os.getenv("LOCAL_MARKER_OUTPUT_DIR", "./marker_output")
-    
-    # GPU optimization settings
-    NUM_WORKERS = int(os.getenv("MARKER_NUM_WORKERS", "4"))  # 4-7 range recommended
-    PAGE_BATCH_SIZE = int(os.getenv("MARKER_PAGE_BATCH", "6"))  # 4-8 range recommended
-    
+
     # Weaviate settings
     WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
     WEAVIATE_URL = os.getenv("WEAVIATE_URL")
@@ -364,135 +341,18 @@ class DocumentProcessor:
                 os.unlink(process_path)
                 logger.debug(f"Cleaned up temporary file: {process_path}")
     
-    
-    def _process_with_local_marker(self, file_path: str) -> Optional[str]:
-        """
-        Process a file using local Marker installation.
-
-        Args:
-            file_path: Path to the file to process
-
-        Returns:
-            Markdown content or None if failed
-        """
-        # Check if GPU is enabled
-        gpu_enabled = os.getenv("GPU_ENABLED", "false").lower() == "true"
-        if not gpu_enabled:
-            logger.info("GPU not enabled (GPU_ENABLED=false), skipping local Marker processing")
-            return None
-
-        try:
-            logger.info("Using marker Python API for GPU-optimized processing")
-            
-            # Import correct marker modules according to PyPI documentation
-            from marker.converters.pdf import PdfConverter
-            from marker.models import create_model_dict
-            from marker.output import text_from_rendered
-            
-            # Use preloaded models if available
-            try:
-                from preload_models import get_preloaded_models
-                models = get_preloaded_models()
-                if models:
-                    logger.info(f"✅ Using {len(models)} preloaded models")
-                else:
-                    logger.info("Loading models...")
-                    models = create_model_dict()
-            except ImportError:
-                logger.info("Loading models...")
-                models = create_model_dict()
-            
-            # Create optimized configuration for faster processing
-            from marker.config.parser import ConfigParser
-            
-            # Optimized GPU configuration for Tesla T4 (15GB VRAM)
-            config = {
-                # GPU optimization - maximize parallel processing
-                "batch_multiplier": 12,  # Increased for better GPU utilization
-                "ocr_batch_size": 64,  # Much larger OCR batch for GPU efficiency
-                "layout_batch_size": 16,  # Larger layout batch
-                "table_rec_batch_size": 16,  # Larger table batch
-                "detection_batch_size": 32,  # Larger detection batch
-                
-                # OCR optimizations - keep GPU busy
-                # "ocr_all_pages": True,  # Process all pages in parallel
-                "disable_ocr": False,  # Keep OCR but optimize
-                "ocr_error_detection": False,  # Skip for speed
-                "detect_language": False,  # Skip language detection
-                
-                # Processing optimizations - reduce CPU work
-                "paginate_output": False,  # Faster without pagination
-                "disable_image_extraction": True,  # Skip images
-                "skip_table_detection": False,  # Keep tables but optimize
-                "disable_math_detection": False,  # Keep math detection
-                
-                # Parallel processing - maximize GPU usage
-                "workers": 8,  # More parallel workers
-                "ray_workers": 8,  # Ray parallel processing
-                "max_parallel_pages": 8,  # Process multiple pages simultaneously
-                
-                # GPU memory optimization
-                "gpu_memory_fraction": 0.8,  # Use 80% of GPU memory
-                "force_gpu": True,  # Force GPU usage
-                "cuda_device": 0,  # Use first GPU
-                
-                # Other optimizations
-                # "use_llm": True,  # Keep LLM for quality
-                # "langs": ["en"],  # Skip language detection
-                # "full_document_analysis": True,  # Process entire document
-            }
-            
-            config_parser = ConfigParser(config)
-            
-            # Create converter with GPU optimizations and config
-            converter = PdfConverter(
-                artifact_dict=models,
-                config=config_parser.generate_config_dict()
-            )
-            
-            # Force GPU memory optimization
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()  # Clear GPU memory
-                torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
-                torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
-                torch.backends.cuda.matmul.allow_tf32 = True  # Use TensorFloat-32
-                torch.backends.cudnn.allow_tf32 = True  # Use TensorFloat-32
-            
-            # Convert PDF to markdown
-            logger.info(f"Converting {file_path} with optimized GPU acceleration...")
-            logger.info(f"Settings: batch_multiplier=12, ocr_batch_size=64, workers=8, max_parallel_pages=8")
-            start_time = time.perf_counter()
-            
-            # Run conversion
-            rendered = converter(file_path)
-            text, _, _ = text_from_rendered(rendered)
-            
-            processing_time = time.perf_counter() - start_time
-            logger.info(f"✅ Conversion completed in {processing_time:.2f}s")
-            
-            return text
-            
-        except ImportError as e:
-            logger.error(f"Marker Python API not available: {e}")
-            logger.error("Please ensure marker-pdf is installed: pip install marker-pdf[gpu]")
-            return None
-        except Exception as e:
-            logger.error(f"Error processing with local Marker: {str(e)}")
-            return None
 
 
 async def convert_to_markdown(
     file_path: str,
-    use_local: Optional[bool] = None,
-    webhook_url: Optional[str] = None
+    webhook_url: str
 ) -> Optional[str]:
     """
-    Convert a PDF or image file to markdown format.
+    Convert a PDF or image file to markdown format using the Marker API.
 
     Args:
         file_path: Path to the input file (PDF or supported image format)
-        use_local: Whether to use local Marker (True) or API (False). Defaults to True.
-        webhook_url: URL for webhook callback (required if use_local is False)
+        webhook_url: URL for webhook callback (required)
 
     Returns:
         Markdown content as string, or None if conversion failed
@@ -512,32 +372,13 @@ async def convert_to_markdown(
     if file_ext not in Config.SUPPORTED_DOCUMENT_FORMATS:
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats: {Config.SUPPORTED_DOCUMENT_FORMATS}")
 
-    # Process file
+    # Process file using Marker API
     processor = DocumentProcessor()
     logger.info(f"Processing file: {file_path}")
+    logger.info("Using Marker API with webhook for processing")
 
-    # Default to local processing if use_local is not specified
-    if use_local is None:
-        use_local = True
-
-    # Choose between local and API processing
-    if use_local:
-        logger.info("Using local Marker for processing")
-        markdown_content = processor._process_with_local_marker(file_path)
-
-        # If local processing fails, raise error instead of fallback
-        if markdown_content is None:
-            raise RuntimeError("Local Marker processing failed. Please check Marker installation and configuration.")
-    else:
-        if not webhook_url:
-            raise ValueError("webhook_url is required when use_local is False")
-
-        logger.info("Using Marker API with webhook for processing")
-        # Upload and wait for webhook response
-        markdown_content = await processor._upload_to_marker(file_path, webhook_url)
-        if not markdown_content:
-            return None
-
+    # Upload and wait for webhook response
+    markdown_content = await processor._upload_to_marker(file_path, webhook_url)
     if not markdown_content:
         return None
 
@@ -1216,15 +1057,14 @@ async def process_document_to_weaviate(
     file_path: str,
     document_id: str,
     tenant_id: str,
-    use_local: Optional[bool] = True,
-    webhook_url: Optional[str] = None,
+    webhook_url: str,
     client: Optional[object] = None
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Complete pipeline to process a document and save to Weaviate.
-    
+
     This function:
-    1. Converts the document to markdown
+    1. Converts the document to markdown using the Marker API
     2. Chunks the markdown content
     3. Saves document metadata to Weaviate
     4. Saves chunks to Weaviate with references
@@ -1233,16 +1073,16 @@ async def process_document_to_weaviate(
         file_path: Path to the input document (PDF or image)
         document_id: Unique identifier for the document
         tenant_id: Tenant ID for multi-tenancy
-        use_local: Whether to use local Marker (True) or API (False). Defaults to True.
+        webhook_url: URL for webhook callback (required)
         client: Weaviate client instance (optional, will create if not provided)
-        
+
     Returns:
         Dictionary containing:
         - document_id: The document UUID used
         - file_name: Original file name
         - total_chunks: Number of chunks created
         - chunks: List of chunk dictionaries (if needed for further processing)
-        
+
     Raises:
         FileNotFoundError: If the input file doesn't exist
         ValueError: If conversion or chunking fails
@@ -1253,14 +1093,13 @@ async def process_document_to_weaviate(
     if client is None:
         client = _get_weaviate_client()
         client_created = True
-    
+
     try:
         # Step 1: Convert document to markdown
         logger.info(f"Processing document: {file_path}")
 
         markdown_content = await convert_to_markdown(
             file_path=file_path,
-            use_local=use_local,
             webhook_url=webhook_url
         )
 

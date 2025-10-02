@@ -1,5 +1,4 @@
 services:
-  # Single service that reads GPU_ENABLED from .env
   document-api:
     build:
       context: .
@@ -10,37 +9,20 @@ services:
     volumes:
       # Mount the entire source directory for better file watching
       - .:/app
-      # Persist marker model cache to avoid re-downloading
-      - marker_cache:/home/app/.cache
     deploy:
       resources:
         limits:
-          memory: 16G
-        reservations:
           memory: 4G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+        reservations:
+          memory: 1G
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - MARKER_API_KEY=${MARKER_API_KEY:-ddVOBV7Wb1IXCCBvutoTki7sMhI5edmpYbqGeJNKuRI}
       - MARKER_API_URL=${MARKER_API_URL:-https://www.datalab.to/api/v1/marker}
       - WEAVIATE_API_KEY=${WEAVIATE_API_KEY}
       - WEAVIATE_URL=${WEAVIATE_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GOOGLE_API_KEY}
-      - GPU_ENABLED=${GPU_ENABLED:-true}
-      # GPU optimization environment variables
-      - CUDA_VISIBLE_DEVICES=0
-      - OMP_NUM_THREADS=1
-      - MKL_NUM_THREADS=1
-      - NUMEXPR_NUM_THREADS=1
-      - OPENBLAS_NUM_THREADS=1
-      - VECLIB_MAXIMUM_THREADS=1
-      - NUMEXPR_MAX_THREADS=1
-      - TORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - WEBHOOK_URL=http://webhook:3001/webhook
     restart: unless-stopped
     depends_on:
       - webhook
@@ -48,11 +30,8 @@ services:
   webhook:
     build: ./webhook
     ports:
-      - "3000:3000"
+      - "3001:3001"
     environment:
-      - PORT=3000
+      - PORT=3001
       - API_CALLBACK_URL=http://document-api:8001/api-callback
     restart: unless-stopped
-
-volumes:
-  marker_cache:
