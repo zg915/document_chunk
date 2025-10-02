@@ -306,12 +306,15 @@ class DocumentProcessor:
 
             # Get the request_id from the response
             result = response.json()
+            logger.info(f"🔍 Full Marker API response: {result}")
+
             request_id = result.get('request_id')
             if not request_id:
                 logger.error("No request_id returned from Marker API")
                 return None
 
             logger.info(f"File uploaded successfully with request_id: {request_id}")
+            logger.info(f"Webhook URL being used: {webhook_url}")
 
             # Get webhook manager and create request with the actual request_id
             webhook_mgr = get_webhook_manager()
