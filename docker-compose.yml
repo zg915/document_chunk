@@ -22,7 +22,7 @@ services:
       - WEAVIATE_URL=${WEAVIATE_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GOOGLE_API_KEY}
-      - WEBHOOK_URL=http://webhook:3001/webhook
+      - WEBHOOK_URL=${WEBHOOK_URL}
     restart: unless-stopped
     depends_on:
       - webhook
@@ -33,6 +33,6 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - API_CALLBACK_URL=http://document-api:8001/api-callback
+      - API_CALLBACK_URL=${API_CALLBACK_URL}
       - MARKER_API_KEY=${MARKER_API_KEY}
     restart: unless-stopped
