@@ -27,17 +27,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Import our document processing functions
-# Add one more import
-from integration import (
+# Import from new modular structure
+from converter import (
     convert_to_markdown,
-    process_document_to_weaviate,
-    delete_document_from_weaviate,
-    _get_weaviate_client,
-    chunk_markdown,
     fast_convert_to_markdown,
-    fast_doc_to_weaviate,
     get_webhook_manager
+)
+from storage import (
+    chunk_markdown,
+    fast_doc_to_weaviate,
+    _get_weaviate_client
+)
+from utils import (
+    acquire_file,
+    cleanup_temp_file,
+    save_uploaded_file,
+    validate_file_format,
+    ERROR_MESSAGES
 )
 
 # Configure logging
@@ -90,13 +96,6 @@ class ChunkMarkdownResponse(BaseModel):
     message: str
     error: Optional[str] = None
 
-class DeleteDocumentResponse(BaseModel):
-    success: bool
-    document_id: Optional[str] = None
-    chunks_deleted: Optional[int] = None
-    message: str
-    error: Optional[str] = None
-
 class HealthResponse(BaseModel):
     status: str
     version: str
@@ -127,354 +126,6 @@ class FastConvertToMarkdownResponse(BaseModel):
     message: str
     error: Optional[str] = None
 
-# Supported file formats for convert-doc-to-markdown
-# Formats that can be processed directly
-DIRECTLY_SUPPORTED_FORMATS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.tiff', '.webp',
-                               '.docx', '.xlsx', '.pptx', '.html', '.htm', '.txt', '.md']
-
-# Formats that need conversion before processing
-CONVERTIBLE_FORMATS = {
-    '.csv': '.xlsx',    # CSV to Excel
-    '.xls': '.xlsx',    # Old Excel to new Excel
-    '.ppt': '.pptx',    # Old PowerPoint to new PowerPoint
-    '.pps': '.pptx',    # PowerPoint Slideshow to PowerPoint Presentation
-    '.doc': '.docx',    # Old Word to new Word
-    '.svg': '.png',     # SVG to PNG
-    '.dot': '.docx',    # Word template to Word document
-    '.rtf': '.docx',    # Rich Text Format to Word
-    '.odt': '.docx'     # OpenDocument to Word
-}
-
-# All supported formats (both direct and convertible)
-SUPPORTED_FORMATS = DIRECTLY_SUPPORTED_FORMATS + list(CONVERTIBLE_FORMATS.keys())
-
-# Common error messages
-ERROR_MESSAGES = {
-    "FILE_OR_URL_REQUIRED": "Either file or URL must be provided",
-    "FILE_OR_URL_NOT_BOTH": "Provide either file or URL, not both",
-    "FILE_OR_TEXT_REQUIRED": "Either file or markdown_text must be provided",
-    "FILE_OR_TEXT_NOT_BOTH": "Provide either file or markdown_text, not both",
-    "DOWNLOAD_FAILED": "Failed to download file from URL",
-    "PROCESSING_FAILED": "Error processing URL"
-}
-
-def validate_file_format(filename: str, supported_formats: List[str]) -> None:
-    """Validate uploaded file format."""
-    file_ext = Path(filename).suffix.lower()
-    if file_ext not in supported_formats:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file format: {file_ext}. Supported: {supported_formats}"
-        )
-
-async def save_uploaded_file(file: UploadFile) -> str:
-    """Save uploaded file to temp directory and return path."""
-    import re
-    import uuid
-
-    # Sanitize filename - remove special characters but keep extension
-    file_ext = Path(file.filename).suffix.lower()
-    base_name = Path(file.filename).stem
-
-    # Replace problematic characters with underscores
-    safe_base_name = re.sub(r'[^\w\s-]', '_', base_name)
-    safe_base_name = re.sub(r'[-\s]+', '_', safe_base_name)
-
-    # Create unique filename to avoid conflicts
-    unique_id = str(uuid.uuid4())[:8]
-    safe_filename = f"{safe_base_name}_{unique_id}{file_ext}"
-
-    temp_file_path = os.path.join(tempfile.gettempdir(), safe_filename)
-
-    with open(temp_file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
-
-    logger.info(f"Saved file: {file.filename} -> {safe_filename}")
-    return temp_file_path
-
-def cleanup_temp_file(file_path: str) -> None:
-    """Clean up temporary file."""
-    if file_path and os.path.exists(file_path):
-        try:
-            os.unlink(file_path)
-            logger.info(f"Cleaned up temporary file: {file_path}")
-        except Exception as e:
-            logger.warning(f"Could not clean up temp file {file_path}: {e}")
-
-async def convert_format(file_path: str, target_ext: str) -> str:
-    """
-    Convert a file from one format to another.
-
-    Args:
-        file_path: Path to the source file
-        target_ext: Target extension (e.g., '.xlsx', '.docx')
-
-    Returns:
-        Path to the converted file
-
-    Raises:
-        Exception: If conversion fails
-    """
-    import subprocess
-
-    source_ext = Path(file_path).suffix.lower()
-    base_name = Path(file_path).stem
-    output_dir = os.path.dirname(file_path)
-    output_path = os.path.join(output_dir, f"{base_name}{target_ext}")
-
-    logger.info(f"Converting {source_ext} to {target_ext}: {file_path}")
-
-    try:
-        # CSV to XLSX conversion using pandas
-        if source_ext == '.csv' and target_ext == '.xlsx':
-            import pandas as pd
-            # Try to read CSV with different encodings
-            try:
-                df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
-            except UnicodeDecodeError:
-                df = pd.read_csv(file_path, encoding='latin-1', on_bad_lines='skip')
-            except Exception:
-                # Fallback to ignore errors
-                df = pd.read_csv(file_path, encoding='utf-8', encoding_errors='ignore', on_bad_lines='skip')
-
-            df.to_excel(output_path, index=False, engine='openpyxl')
-            logger.info(f"Converted CSV to XLSX: {output_path}")
-            return output_path
-
-        # XLS to XLSX conversion using pandas
-        elif source_ext == '.xls' and target_ext == '.xlsx':
-            import pandas as pd
-            try:
-                # Try reading with xlrd engine (for old .xls files)
-                df = pd.read_excel(file_path, engine='xlrd')
-            except Exception as e:
-                logger.warning(f"Failed to read with xlrd: {e}, trying openpyxl")
-                # Some .xls files might actually be .xlsx with wrong extension
-                df = pd.read_excel(file_path, engine='openpyxl')
-
-            df.to_excel(output_path, index=False, engine='openpyxl')
-            logger.info(f"Converted XLS to XLSX: {output_path}")
-            return output_path
-
-        # DOC to DOCX, PPT to PPTX, PPS to PPTX, RTF to DOCX, ODT to DOCX, DOT to DOCX using LibreOffice
-        elif source_ext in ['.doc', '.ppt', '.pps', '.rtf', '.odt', '.dot'] and target_ext in ['.docx', '.pptx']:
-            # Use LibreOffice for conversion
-            target_format = target_ext[1:]  # Remove the dot
-            cmd = [
-                'libreoffice',
-                '--headless',
-                '--convert-to', target_format,
-                '--outdir', output_dir,
-                file_path
-            ]
-
-            # Run conversion
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode != 0:
-                logger.error(f"LibreOffice conversion failed: {result.stderr}")
-                raise Exception(f"LibreOffice conversion failed: {result.stderr}")
-
-            # LibreOffice might create file with slightly different name
-            if not os.path.exists(output_path):
-                # Look for the converted file
-                possible_output = os.path.join(output_dir, f"{base_name}.{target_format}")
-                if os.path.exists(possible_output):
-                    output_path = possible_output
-                else:
-                    raise FileNotFoundError(f"Converted file not found: {output_path}")
-
-            logger.info(f"Converted {source_ext} to {target_ext}: {output_path}")
-            return output_path
-
-        # SVG to PNG conversion
-        elif source_ext == '.svg' and target_ext == '.png':
-            try:
-                # Try using cairosvg first
-                import cairosvg
-                cairosvg.svg2png(url=file_path, write_to=output_path)
-                logger.info(f"Converted SVG to PNG using cairosvg: {output_path}")
-                return output_path
-            except ImportError:
-                # Fallback to Inkscape if available
-                cmd = ['inkscape', file_path, '--export-png', output_path]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-                if result.returncode != 0:
-                    logger.error(f"SVG conversion failed: {result.stderr}")
-                    raise Exception(f"SVG conversion failed: {result.stderr}")
-
-                logger.info(f"Converted SVG to PNG using Inkscape: {output_path}")
-                return output_path
-
-        else:
-            raise ValueError(f"Unsupported conversion: {source_ext} to {target_ext}")
-
-    except Exception as e:
-        logger.error(f"Conversion failed: {e}")
-        raise
-
-async def convert_if_needed(file_path: str) -> str:
-    """
-    Convert a file to a supported format if needed.
-
-    Args:
-        file_path: Path to the source file
-
-    Returns:
-        Path to the file (original or converted)
-    """
-    file_ext = Path(file_path).suffix.lower()
-
-    # Check if conversion is needed
-    if file_ext in CONVERTIBLE_FORMATS:
-        target_ext = CONVERTIBLE_FORMATS[file_ext]
-        logger.info(f"File needs conversion: {file_ext} -> {target_ext}")
-
-        try:
-            # Convert the file
-            converted_path = await convert_format(file_path, target_ext)
-
-            # Clean up original file
-            cleanup_temp_file(file_path)
-
-            logger.info(f"Successfully converted and cleaned up original: {converted_path}")
-            return converted_path
-
-        except Exception as e:
-            logger.error(f"Conversion failed, keeping original file: {e}")
-            # If conversion fails, we'll try to process the original file
-            return file_path
-
-    # No conversion needed
-    return file_path
-
-async def acquire_file(file: UploadFile = None, url: str = None) -> str:
-    """
-    Acquire a file either from upload or URL, and convert if needed.
-
-    Args:
-        file: Optional uploaded file
-        url: Optional URL to download from
-
-    Returns:
-        Path to the temporary file (possibly converted)
-
-    Raises:
-        HTTPException: If neither or both are provided
-    """
-    # Check if we have a valid file or URL
-    has_file = file and file.filename
-    has_url = url and url.strip()
-
-    if not has_file and not has_url:
-        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_URL_REQUIRED"])
-
-    if has_file and has_url:
-        raise HTTPException(status_code=400, detail=ERROR_MESSAGES["FILE_OR_URL_NOT_BOTH"])
-
-    # Get the file first (don't validate format yet)
-    if has_file:
-        # Check if the original format is at least in our extended supported list
-        file_ext = Path(file.filename).suffix.lower()
-        if file_ext not in SUPPORTED_FORMATS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file format: {file_ext}. Supported: {SUPPORTED_FORMATS}"
-            )
-        temp_file_path = await save_uploaded_file(file)
-    else:
-        temp_file_path = await download_file_from_url(url)
-        # Check format after download
-        file_ext = Path(temp_file_path).suffix.lower()
-        if file_ext not in SUPPORTED_FORMATS:
-            cleanup_temp_file(temp_file_path)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Downloaded file has unsupported format: {file_ext}"
-            )
-
-    # Convert if needed
-    final_file_path = await convert_if_needed(temp_file_path)
-
-    # Now validate the final format (after conversion)
-    final_ext = Path(final_file_path).suffix.lower()
-    if final_ext not in DIRECTLY_SUPPORTED_FORMATS:
-        # This shouldn't happen if conversion worked correctly
-        logger.error(f"File after conversion still not directly supported: {final_ext}")
-        cleanup_temp_file(final_file_path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"File conversion resulted in unsupported format: {final_ext}"
-        )
-
-    return final_file_path
-
-async def download_file_from_url(url: str) -> str:
-    """
-    Download a file from URL and save to temp directory.
-
-    Args:
-        url: URL of the file to download
-
-    Returns:
-        Path to the downloaded temporary file
-
-    Raises:
-        HTTPException: If download fails or URL is invalid
-    """
-    try:
-        # Parse URL to get filename
-        parsed_url = urlparse(url)
-        filename = os.path.basename(parsed_url.path)
-        if not filename:
-            filename = "downloaded_file"
-
-        # Add extension if missing
-        if '.' not in filename:
-            # Try to determine extension from content-type
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            response = requests.head(url, headers=headers, timeout=10)
-            content_type = response.headers.get('content-type', '')
-            if 'pdf' in content_type:
-                filename += '.pdf'
-            elif 'image' in content_type:
-                if 'jpeg' in content_type or 'jpg' in content_type:
-                    filename += '.jpg'
-                elif 'png' in content_type:
-                    filename += '.png'
-                elif 'gif' in content_type:
-                    filename += '.gif'
-                elif 'webp' in content_type:
-                    filename += '.webp'
-                else:
-                    filename += '.jpg'  # default for images
-            else:
-                filename += '.pdf'  # default
-
-        # Download file with headers to avoid 403 errors
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=30, stream=True)
-        response.raise_for_status()
-
-        # Save to temp file
-        temp_file_path = os.path.join(tempfile.gettempdir(), filename)
-        with open(temp_file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-        logger.info(f"Downloaded file from URL: {url} to {temp_file_path}")
-        return temp_file_path
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"{ERROR_MESSAGES['DOWNLOAD_FAILED']}: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{ERROR_MESSAGES['PROCESSING_FAILED']}: {str(e)}")
 
 # Health check endpoint
 @app.get("/health", response_model=HealthResponse)
@@ -647,60 +298,6 @@ async def fast_convert_to_mark_down(
         if temp_file_path and os.path.exists(temp_file_path):
             os.unlink(temp_file_path)
 
-# Process document and save to Weaviate
-@app.post("/process-doc-to-weaviate", response_model=ProcessDocumentResponse)
-async def upload_and_process_document(
-    request: Request,
-    file: UploadFile = File(default=None),
-    url: str = Form(default=None),
-    tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
-    document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)")
-):
-    """
-    Upload and process document to Weaviate using Marker API.
-
-    Accepts either:
-    - An uploaded file (multipart/form-data)
-    - A URL to download the file from
-    """
-    temp_file_path = None
-    start_time = time.time()
-
-    try:
-        temp_file_path = await acquire_file(file, url)
-
-        doc_id = document_id or str(uuid.uuid4())
-
-        webhook_url = os.getenv('WEBHOOK_URL')
-        result = await process_document_to_weaviate(
-            file_path=temp_file_path,
-            document_id=doc_id,
-            tenant_id=tenant_id,
-            webhook_url=webhook_url
-        )
-
-        processing_time = time.time() - start_time
-
-        return ProcessDocumentResponse(
-            success=True,
-            document_id=result["document_id"],
-            file_name=result["file_name"],
-            total_chunks=result["total_chunks"],
-            processing_time=processing_time,
-            message=f"Document processed with {result['total_chunks']} chunks"
-        )
-        
-    except Exception as e:
-        logger.error(f"Processing error: {e}")
-        return ProcessDocumentResponse(
-            success=False,
-            processing_time=time.time() - start_time,
-            message="Failed to process document",
-            error=str(e)
-        )
-    finally:
-        cleanup_temp_file(temp_file_path)
-
 
 # Fast process document and save to Weaviate
 @app.post("/fast-doc-to-weaviate", response_model=ProcessDocumentResponse)
@@ -709,14 +306,20 @@ async def upload_and_fast_process_document(
     file: UploadFile = File(default=None),
     url: str = Form(default=None),
     tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
-    document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)")
+    document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)"),
+    document_type: Optional[str] = Query(None, description="Optional document category (contract, manual, material_list, etc.)"),
+    custom_file_path: Optional[str] = Query(None, description="Optional file path to store in DB (folder or full path)")
 ):
     """
-    Upload and fast process document to Weaviate.
+    Upload and fast process document to Weaviate Personal_Documents/Personal_Chunks.
 
     Accepts either:
     - An uploaded file (multipart/form-data)
     - A URL to download the file from
+
+    Optional parameters:
+    - document_type: Category of the document (contract, manual, material_list, etc.)
+    - custom_file_path: File path metadata to store in DB (e.g., 'ITS/Disney/' or 'ITS/Disney/file.pdf')
     """
     temp_file_path = None
     start_time = time.time()
@@ -729,7 +332,9 @@ async def upload_and_fast_process_document(
         result = fast_doc_to_weaviate(
             file_path=temp_file_path,
             document_id=doc_id,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            document_type=document_type,
+            custom_file_path=custom_file_path
         )
 
         processing_time = time.time() - start_time
@@ -742,7 +347,7 @@ async def upload_and_fast_process_document(
             processing_time=processing_time,
             message=f"Document fast processed with {result['total_chunks']} chunks"
         )
-        
+
     except Exception as e:
         logger.error(f"Fast processing error: {e}")
         return ProcessDocumentResponse(
@@ -806,34 +411,6 @@ async def chunk_markdown_content(
         )
     finally:
         cleanup_temp_file(temp_file_path)
-
-# Delete document from Weaviate
-@app.delete("/delete-document", response_model=DeleteDocumentResponse)
-async def delete_document(
-    document_id: str = Query(...),
-    tenant_id: str = Query(...)
-):
-    """Delete a document and its chunks from Weaviate."""
-    try:
-        result = delete_document_from_weaviate(
-            document_id=document_id,
-            tenant_id=tenant_id
-        )
-        
-        return DeleteDocumentResponse(
-            success=True,
-            document_id=result["document_id"],
-            chunks_deleted=result["chunks_deleted"],
-            message=result["status"]
-        )
-        
-    except Exception as e:
-        logger.error(f"Deletion error: {e}")
-        return DeleteDocumentResponse(
-            success=False,
-            message="Failed to delete document",
-            error=str(e)
-        )
 
 # List documents
 @app.get("/documents")

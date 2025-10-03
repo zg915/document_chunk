@@ -819,86 +819,97 @@ def save_document_to_weaviate(
     file_path: str,
     chunks: List[Dict],
     document_id: str,
-    tenant_id: str
+    tenant_id: str,
+    document_type: Optional[str] = None
 ) -> str:
     """
-    Save document metadata to Weaviate Documents collection.
-    
+    Save document metadata to Weaviate Personal_Documents collection with multi-tenancy.
+
     Args:
         client: Weaviate client instance
         file_path: Path to the original document file
         chunks: List of chunks (used to get total_chunks count)
         document_id: Unique identifier for the document
         tenant_id: Tenant ID for multi-tenancy
-        
+        document_type: Optional document category (contract, manual, material_list, etc.)
+
     Returns:
         The document UUID used in Weaviate
     """
+    from datetime import datetime
+
     # Get file information
     file_stats = os.stat(file_path)
     file_path_obj = Path(file_path)
-    
+
     file_name = file_path_obj.name
     file_size = file_stats.st_size
-    mime_type = mimetypes.guess_type(file_path)[0]
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
     total_chunks = len(chunks)
-    
-    # Prepare document data
+    file_modified_at = datetime.fromtimestamp(file_stats.st_mtime)
+
+    # Prepare document data matching Personal_Documents schema
     document_data = {
+        "document_id": document_id,
         "file_name": file_name,
+        "mime_type": mime_type,
+        "file_modified_at": file_modified_at,
+        "file_category": document_type or "NA",  # Use provided type or "NA"
         "file_size": file_size,
         "total_chunks": total_chunks,
-        "mime_type": mime_type or "application/octet-stream",
     }
-    
-    # Save to Weaviate Documents collection
-    documents_collection = client.collections.get("Documents").with_tenant(tenant_id)
-    documents_collection.data.insert(
-        properties=document_data,
-        uuid=document_id
+
+    # Save to Weaviate Personal_Documents collection with tenant
+    documents_collection = client.collections.get("Personal_Documents").with_tenant(tenant_id)
+    document_uuid = documents_collection.data.insert(
+        properties=document_data
     )
-    
-    logger.info(f"Saved document '{file_name}' to Weaviate with UUID: {document_id}")
-    return document_id
+
+    logger.info(f"Saved document '{file_name}' to Personal_Documents (tenant: {tenant_id}) with UUID: {document_uuid}")
+    return document_uuid
 
 def save_chunks_to_weaviate(
     client,
     chunks: List[Dict],
+    document_uuid: str,
     document_id: str,
     tenant_id: str
 ) -> None:
     """
-    Save chunks to Weaviate Chunks collection with reference to document.
-    
+    Save chunks to Weaviate Personal_Chunks collection with cross-reference to document.
+
     Args:
         client: Weaviate client instance
         chunks: List of chunk dictionaries from chunk_markdown
-        document_id: Document UUID to reference
+        document_uuid: Document UUID (Weaviate internal ID) to reference
+        document_id: Document ID (custom identifier)
         tenant_id: Tenant ID for multi-tenancy
     """
-    chunks_collection = client.collections.get("Chunks").with_tenant(tenant_id)
-    
-    with chunks_collection.batch.fixed_size(batch_size=50) as batch:
-        for i, chunk in enumerate(chunks):
-            chunk_uuid = generate_uuid5(f"{document_id}_chunk_{i}")
-            
-            chunk_data = {
-                "content": chunk["content"],
-                "chunk_index": i,
-                "header": chunk.get("header", ""),
-                "document_id": document_id,
-                "char_count": chunk.get("char_count", len(chunk["content"])),
-                "token_count": chunk.get("token_count", 0),
-                "chunk_type": chunk.get("chunk_type", "text")
+    chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
+
+    # Insert chunks with cross-reference to the document
+    for i, chunk in enumerate(chunks):
+        chunk_data = {
+            "document_id": document_id,
+            "chunk_index": i,
+            "content": chunk["content"],
+            "header": chunk.get("header", ""),
+            "source_file": chunk.get("source_file", ""),
+            "chunk_type": chunk.get("chunk_type", "text"),
+            "char_count": chunk.get("char_count", len(chunk["content"])),
+            "token_count": chunk.get("token_count", 0),
+            "extraction_method": chunk.get("extraction_method", "unstructured")
+        }
+
+        # Insert with cross-reference to parent document
+        chunks_collection.data.insert(
+            properties=chunk_data,
+            references={
+                "from_document": document_uuid  # Cross-reference to the parent document
             }
-            
-            batch.add_object(
-                properties=chunk_data,
-                uuid=chunk_uuid,
-                references={"document_object": document_id}
-            )
-    
-    logger.info(f"Saved {len(chunks)} chunks to Weaviate for document {document_id}")
+        )
+
+    logger.info(f"Saved {len(chunks)} chunks to Personal_Chunks (tenant: {tenant_id}) for document {document_id}")
 
 def delete_document_from_weaviate(
     document_id: str,
@@ -1169,31 +1180,33 @@ def fast_doc_to_weaviate(
     document_id: str,
     tenant_id: str,
     client: Optional[object] = None,
-    include_metadata: Optional[bool] = True
+    include_metadata: Optional[bool] = True,
+    document_type: Optional[str] = None
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
-    
+
     This function:
     1. Converts the document to markdown using fast_convert_to_markdown
     2. Chunks the markdown content
-    3. Saves document metadata to Weaviate
-    4. Saves chunks to Weaviate with references
-    
+    3. Saves document metadata to Personal_Documents (with tenant)
+    4. Saves chunks to Personal_Chunks with cross-references (with tenant)
+
     Args:
         file_path: Path to the input document (PDF or image)
         document_id: Unique identifier for the document
         tenant_id: Tenant ID for multi-tenancy
         client: Weaviate client instance (optional, will create if not provided)
         include_metadata: Whether to include processing metadata in output
-        
+        document_type: Optional document category (contract, manual, material_list, etc.)
+
     Returns:
         Dictionary containing:
         - document_id: The document UUID used
         - file_name: Original file name
         - total_chunks: Number of chunks created
         - chunks: List of chunk dictionaries (if needed for further processing)
-        
+
     Raises:
         FileNotFoundError: If the input file doesn't exist
         ValueError: If conversion or chunking fails
@@ -1204,7 +1217,7 @@ def fast_doc_to_weaviate(
     if client is None:
         client = _get_weaviate_client()
         client_created = True
-    
+
     try:
         # Step 1: Convert document to markdown using fast conversion
         logger.info(f"Fast processing document: {file_path}")
@@ -1213,7 +1226,7 @@ def fast_doc_to_weaviate(
             file_path=file_path,
             include_metadata=include_metadata
         )
-        
+
         if not markdown_content:
             raise ValueError(f"Failed to convert document to markdown: {file_path}")
 
@@ -1224,33 +1237,35 @@ def fast_doc_to_weaviate(
 
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
-        
-        # Step 3: Save document metadata to Weaviate
-        saved_doc_id = save_document_to_weaviate(
+
+        # Step 3: Save document metadata to Weaviate Personal_Documents
+        document_uuid = save_document_to_weaviate(
             client=client,
             file_path=file_path,
             chunks=chunks,
             document_id=document_id,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            document_type=document_type
         )
-        
-        # Step 4: Save chunks to Weaviate
+
+        # Step 4: Save chunks to Weaviate Personal_Chunks with cross-reference
         save_chunks_to_weaviate(
             client=client,
             chunks=chunks,
-            document_id=saved_doc_id,
+            document_uuid=document_uuid,  # Pass the Weaviate UUID for cross-reference
+            document_id=document_id,      # Pass the custom document ID
             tenant_id=tenant_id
         )
-        
+
         # Return summary information
         result = {
-            "document_id": saved_doc_id,
+            "document_id": document_id,
             "file_name": Path(file_path).name,
             "total_chunks": len(chunks),
             "chunks": chunks  # Include chunks in case caller needs them
         }
-        
-        logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks")
+
+        logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks (tenant: {tenant_id})")
         return result
         
     except FileNotFoundError as e:
