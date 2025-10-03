@@ -32,6 +32,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]"
 
+# ---------- Pre-download unstructured language models ----------
+RUN python3 -c "from unstructured.partition.md import partition_md; partition_md(text='# Test\\nThis is a test to download models.')" || true
+
 # ---------- App files (changes frequently - keep last) ----------
 COPY . .
 
