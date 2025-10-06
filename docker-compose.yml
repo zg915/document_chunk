@@ -9,6 +9,8 @@ services:
     volumes:
       # Mount the entire source directory for better file watching
       - .:/app
+      # Persist model cache across container restarts
+      - unstructured-cache:/home/app/.cache
     deploy:
       resources:
         limits:
@@ -36,3 +38,6 @@ services:
       - API_CALLBACK_URL=${API_CALLBACK_URL}
       - MARKER_API_KEY=${MARKER_API_KEY}
     restart: unless-stopped
+
+volumes:
+  unstructured-cache:

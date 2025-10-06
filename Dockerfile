@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     XDG_CACHE_HOME=/tmp \
     PIP_CACHE_DIR=/tmp/pip \
-    NLTK_DATA=/usr/local/nltk_data
+    NLTK_DATA=/usr/local/nltk_data \
+    UNSTRUCTURED_NLTK_DATA=/usr/local/nltk_data
 
 WORKDIR /app
 
@@ -30,17 +31,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ---------- Pre-fetch runtime assets ----------
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger')]"
-
-# ---------- Pre-download unstructured language models ----------
-RUN python3 -c "from unstructured.partition.md import partition_md; partition_md(text='# Test\\nThis is a test to download models.')" || true
+    python3 -c "import os, nltk; os.makedirs('/usr/local/nltk_data', exist_ok=True); [nltk.download(p, download_dir='/usr/local/nltk_data', quiet=True) for p in ('punkt','punkt_tab','averaged_perceptron_tagger','averaged_perceptron_tagger_eng')]" \
+    && chmod -R 755 /usr/local/nltk_data
 
 # ---------- App files (changes frequently - keep last) ----------
 COPY . .
 
 # Create an unprivileged user and fix ownership
 RUN useradd --create-home --shell /bin/bash app \
+ && mkdir -p /home/app/.cache \
  && chown -R app:app /app /home/app
+
+# Switch to app user
+USER app
 
 EXPOSE 8001
 

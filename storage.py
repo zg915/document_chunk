@@ -161,9 +161,13 @@ def chunk_markdown(
         elements = partition_md(text=markdown_content)
     except Exception as e:
         logger.error(f"Failed to partition markdown: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Full error details: {repr(e)}")
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         raise
 
-    # Extract titles for context
+    # Build title map for header lookup (matches reference implementation)
     title_by_id = {}
     for el in elements:
         if getattr(el, "category", None) == "Title" and hasattr(el, "element_id"):
@@ -179,7 +183,6 @@ def chunk_markdown(
             new_after_n_chars=new_chunk_after,
             combine_text_under_n_chars=min_chunk_size
         )
-        logger.info(f"Used title-based chunking")
     except Exception as e:
         logger.warning(f"Title-based chunking failed, falling back to basic: {e}")
         chunks = chunk_elements(
@@ -198,7 +201,7 @@ def chunk_markdown(
         if not text:
             continue
 
-        # Add header context if available
+        # Extract header (matches reference implementation exactly)
         header = None
 
         # Use Unstructured's parent_id to retrieve title directly
@@ -207,7 +210,7 @@ def chunk_markdown(
             header = title_by_id[parent_id][:200]
 
         # If no parent relationship found, check if chunk starts with a title-like line
-        if not header and hasattr(chunk, 'category') and chunk.category == 'CompositeElement':
+        if not header and chunk.category == 'CompositeElement':
             first_line = text.split('\n')[0].strip()
             # Simple check: if first line is short and looks like a title
             if len(first_line) < 100 and len(first_line) > 5:
@@ -218,8 +221,9 @@ def chunk_markdown(
                     header = first_line
 
         # For TableChunk, use a descriptive identifier
-        if hasattr(chunk, 'category') and chunk.category == 'TableChunk':
+        if chunk.category == 'TableChunk':
             header = "Table Data"
+
 
         chunk_data = {
             "content": text,
@@ -284,7 +288,7 @@ def save_document_to_weaviate(
         "file_path": custom_file_path if custom_file_path is not None else "",  # Store custom path as-is
         "mime_type": mime_type,
         "file_modified_at": file_modified_at,
-        "file_category": document_type or "",  # Use provided type or "NA"
+        "file_category": document_type if document_type else "NA",
         "file_size": file_size,
         "total_chunks": total_chunks,
     }
@@ -346,6 +350,111 @@ def save_chunks_to_weaviate(
 
 
 # ============================================================================
+# DELETE OPERATIONS
+# ============================================================================
+def delete_document_from_weaviate(
+    document_id: str,
+    tenant_id: str,
+    client: Optional[object] = None
+) -> Dict[str, Union[str, int]]:
+    """
+    Delete a document and all its associated chunks from Weaviate.
+
+    Args:
+        document_id: Document ID to delete
+        tenant_id: Tenant ID for multi-tenancy
+        client: Weaviate client instance (optional, will create if not provided)
+
+    Returns:
+        Dictionary with deletion summary:
+        - document_id: The deleted document ID
+        - chunks_deleted: Number of chunks deleted
+        - status: Deletion status message
+    """
+    from weaviate.classes.query import Filter
+
+    # Create client if not provided
+    client_created = False
+    if client is None:
+        client = _get_weaviate_client()
+        client_created = True
+
+    try:
+        documents_collection = client.collections.get("Personal_Documents").with_tenant(tenant_id)
+        chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
+
+        # Find the document by document_id
+        doc_response = documents_collection.query.fetch_objects(
+            filters=Filter.by_property("document_id").equal(document_id),
+            limit=1
+        )
+
+        if len(doc_response.objects) == 0:
+            raise ValueError(f"Document not found with document_id: {document_id}")
+
+        doc = doc_response.objects[0]
+        doc_uuid = doc.uuid
+
+        logger.info(f"Found document {document_id} with UUID {doc_uuid}")
+
+        # Count chunks by cross-reference
+        chunks_agg_by_ref = chunks_collection.aggregate.over_all(
+            filters=Filter.by_ref("from_document").by_id().equal(doc_uuid),
+            total_count=True
+        )
+        chunk_count_by_ref = chunks_agg_by_ref.total_count
+
+        # Count chunks by document_id (fallback)
+        chunks_agg_by_id = chunks_collection.aggregate.over_all(
+            filters=Filter.by_property("document_id").equal(document_id),
+            total_count=True
+        )
+        chunk_count_by_id = chunks_agg_by_id.total_count
+
+        logger.info(f"Chunks by reference: {chunk_count_by_ref}, by document_id: {chunk_count_by_id}")
+
+        # Delete chunks via cross-reference (preferred method)
+        chunks_deleted = 0
+        if chunk_count_by_ref > 0:
+            chunks_collection.data.delete_many(
+                where=Filter.by_ref("from_document").by_id().equal(doc_uuid)
+            )
+            chunks_deleted = chunk_count_by_ref
+            logger.info(f"Deleted {chunk_count_by_ref} chunks via cross-reference")
+
+        # Delete any remaining chunks by document_id (fallback)
+        if chunk_count_by_id > chunk_count_by_ref:
+            remaining = chunk_count_by_id - chunk_count_by_ref
+            chunks_collection.data.delete_many(
+                where=Filter.by_property("document_id").equal(document_id)
+            )
+            chunks_deleted += remaining
+            logger.info(f"Deleted {remaining} additional chunks via document_id")
+
+        # Delete the document
+        documents_collection.data.delete_by_id(doc_uuid)
+        logger.info(f"Deleted document {document_id}")
+
+        return {
+            "document_id": document_id,
+            "chunks_deleted": chunks_deleted,
+            "status": f"Successfully deleted document and {chunks_deleted} chunks"
+        }
+
+    except Exception as e:
+        logger.error(f"Error deleting document: {e}")
+        raise
+    finally:
+        # Close client if we created it
+        if client_created:
+            try:
+                client.close()
+                logger.info("Closed Weaviate connection")
+            except Exception as e:
+                logger.warning(f"Error closing Weaviate connection: {e}")
+
+
+# ============================================================================
 # COMPLETE PIPELINE
 # ============================================================================
 def fast_doc_to_weaviate(
@@ -392,6 +501,8 @@ def fast_doc_to_weaviate(
     if client is None:
         client = _get_weaviate_client()
         client_created = True
+
+    document_uuid = None  # Track if document was created for rollback
 
     try:
         # Step 1: Convert document to markdown using fast conversion
@@ -448,14 +559,39 @@ def fast_doc_to_weaviate(
         logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks (tenant: {tenant_id})")
         return result
 
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
-        raise
-    except ValueError as e:
-        logger.error(f"Processing error: {e}")
-        raise
     except Exception as e:
-        logger.error(f"Unexpected error processing document: {e}")
+        logger.error(f"Error processing document: {e}")
+
+        # ROLLBACK: Clean up partial data if document was created
+        if document_uuid:
+            logger.info(f"Rolling back: deleting document and any partial chunks")
+            try:
+                from weaviate.classes.query import Filter
+
+                docs_collection = client.collections.get("Personal_Documents").with_tenant(tenant_id)
+                chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
+
+                # Delete chunks via cross-reference (preferred)
+                try:
+                    chunks_collection.data.delete_many(
+                        where=Filter.by_ref("from_document").by_id().equal(document_uuid)
+                    )
+                    logger.info(f"Deleted chunks via cross-reference")
+                except Exception as chunk_err:
+                    # Fallback: delete by document_id
+                    logger.warning(f"Cross-reference deletion failed, using document_id: {chunk_err}")
+                    chunks_collection.data.delete_many(
+                        where=Filter.by_property("document_id").equal(document_id)
+                    )
+                    logger.info(f"Deleted chunks via document_id")
+
+                # Delete the document
+                docs_collection.data.delete_by_id(document_uuid)
+                logger.info(f"Deleted document {document_id}")
+
+            except Exception as rollback_error:
+                logger.error(f"Rollback failed: {rollback_error}")
+
         raise
     finally:
         # Close client if we created it

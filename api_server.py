@@ -36,6 +36,7 @@ from converter import (
 from storage import (
     chunk_markdown,
     fast_doc_to_weaviate,
+    delete_document_from_weaviate,
     _get_weaviate_client
 )
 from utils import (
@@ -100,6 +101,13 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     weaviate_connected: bool
+
+class DeleteDocumentResponse(BaseModel):
+    success: bool
+    document_id: Optional[str] = None
+    chunks_deleted: Optional[int] = None
+    message: str
+    error: Optional[str] = None
 
 class WebhookCallbackRequest(BaseModel):
     request_id: str
@@ -412,29 +420,73 @@ async def chunk_markdown_content(
     finally:
         cleanup_temp_file(temp_file_path)
 
+
+# Delete document and its chunks
+@app.delete("/delete-document", response_model=DeleteDocumentResponse)
+async def delete_document(
+    document_id: str = Query(..., description="Document ID to delete"),
+    tenant_id: str = Query(..., description="Tenant ID for multi-tenancy")
+):
+    """
+    Delete a document and all its associated chunks from Weaviate Personal_Documents/Personal_Chunks.
+    """
+    try:
+        result = delete_document_from_weaviate(
+            document_id=document_id,
+            tenant_id=tenant_id
+        )
+
+        return DeleteDocumentResponse(
+            success=True,
+            document_id=result["document_id"],
+            chunks_deleted=result["chunks_deleted"],
+            message=result["status"]
+        )
+
+    except ValueError as e:
+        # Document not found
+        logger.warning(f"Document not found: {e}")
+        return DeleteDocumentResponse(
+            success=False,
+            message="Document not found",
+            error=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Deletion error: {e}")
+        return DeleteDocumentResponse(
+            success=False,
+            message="Failed to delete document",
+            error=str(e)
+        )
+
+
 # List documents
 @app.get("/documents")
 async def list_documents(
-    tenant_id: str = Query(...),
-    limit: int = Query(10, ge=1, le=100)
+    tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
+    limit: int = Query(10, ge=1, le=100, description="Maximum number of documents to return")
 ):
-    """List all documents for a tenant."""
+    """List all documents for a tenant from Personal_Documents collection."""
     client = _get_weaviate_client()
     try:
-        documents_collection = client.collections.get("Documents").with_tenant(tenant_id)
+        documents_collection = client.collections.get("Personal_Documents").with_tenant(tenant_id)
         results = documents_collection.query.fetch_objects(limit=limit)
-        
+
         documents = [
             {
-                "document_id": str(obj.uuid),
+                "uuid": str(obj.uuid),
+                "document_id": obj.properties.get("document_id"),
                 "file_name": obj.properties.get("file_name"),
+                "file_path": obj.properties.get("file_path"),
+                "file_category": obj.properties.get("file_category"),
                 "file_size": obj.properties.get("file_size"),
                 "total_chunks": obj.properties.get("total_chunks"),
-                "mime_type": obj.properties.get("mime_type")
+                "mime_type": obj.properties.get("mime_type"),
+                "file_modified_at": obj.properties.get("file_modified_at")
             }
             for obj in results.objects
         ]
-        
+
         return {"documents": documents, "total": len(documents)}
     finally:
         client.close()
