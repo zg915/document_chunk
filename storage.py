@@ -300,7 +300,7 @@ def save_document_to_weaviate(
     )
 
     logger.info(f"Saved document '{file_name}' to Personal_Documents (tenant: {tenant_id}) with UUID: {document_uuid}")
-    return document_uuid
+    return document_uuid, file_modified_at
 
 
 def save_chunks_to_weaviate(
@@ -309,7 +309,8 @@ def save_chunks_to_weaviate(
     document_uuid: str,
     document_id: str,
     tenant_id: str,
-    source_file: str
+    source_file: str,
+    file_modified_at=None
 ) -> None:
     """
     Save chunks to Weaviate Personal_Chunks collection with cross-reference to document.
@@ -321,6 +322,7 @@ def save_chunks_to_weaviate(
         document_id: Document ID (custom identifier)
         tenant_id: Tenant ID for multi-tenancy
         source_file: Source file name (original document name)
+        file_modified_at: File modification timestamp (optional)
     """
     chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
 
@@ -335,7 +337,8 @@ def save_chunks_to_weaviate(
             "chunk_type": chunk.get("chunk_type", "text"),
             "char_count": chunk.get("char_count", len(chunk["content"])),
             "token_count": chunk.get("token_count", 0),
-            "extraction_method": "unstructured_v2"
+            "extraction_method": "unstructured_v2",
+            "file_modified_at": file_modified_at
         }
 
         # Insert with cross-reference to parent document
@@ -525,7 +528,7 @@ def fast_doc_to_weaviate(
             raise ValueError(f"No chunks created from document: {file_path}")
 
         # Step 3: Save document metadata to Weaviate Personal_Documents
-        document_uuid = save_document_to_weaviate(
+        document_uuid, file_modified_at = save_document_to_weaviate(
             client=client,
             file_path=file_path,
             chunks=chunks,
@@ -545,7 +548,8 @@ def fast_doc_to_weaviate(
             document_uuid=document_uuid,
             document_id=document_id,
             tenant_id=tenant_id,
-            source_file=source_file_name
+            source_file=source_file_name,
+            file_modified_at=file_modified_at
         )
 
         # Return summary information
