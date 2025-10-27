@@ -141,11 +141,23 @@ def chunk_markdown(
         ValueError: If the input is empty
     """
     # Handle input - either text or file path
-    markdown_content = markdown_input
-    if isinstance(markdown_input, Path):
+    markdown_content = None
+
+    if isinstance(markdown_input, (Path, str)) and os.path.exists(str(markdown_input)):
+        # It's a file path
         with open(markdown_input, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         logger.info(f"Loaded markdown from file: {markdown_input}")
+    elif isinstance(markdown_input, str):
+        # It's markdown text content
+        markdown_content = markdown_input
+        logger.info("Using provided markdown text content")
+    else:
+        raise ValueError(f"Invalid markdown_input type: {type(markdown_input)}. Must be string or Path.")
+
+    # Validate markdown content before processing
+    if markdown_content is None:
+        raise ValueError("markdown_content is None - failed to read from input")
 
     if not markdown_content or not markdown_content.strip():
         raise ValueError("Empty markdown content")
@@ -156,15 +168,28 @@ def chunk_markdown(
     min_chunk_size = Config.MIN_CHUNK_SIZE
     chunk_overlap = Config.CHUNK_OVERLAP
 
+    # Validate that markdown_content is a non-empty string before calling partition_md
+    if not isinstance(markdown_content, str):
+        raise TypeError(f"partition_md requires text parameter to be a string, got {type(markdown_content).__name__}")
+
+    if len(markdown_content.strip()) == 0:
+        raise ValueError("Cannot partition empty markdown content")
+
     # Parse markdown into elements
     try:
         elements = partition_md(text=markdown_content)
+    except TypeError as e:
+        # This specific error likely means wrong parameters to partition_md
+        raise TypeError(
+            f"partition_md failed with TypeError: {str(e)}. "
+            f"This usually means the 'text' parameter was not passed correctly. "
+            f"Received markdown_content type: {type(markdown_content)}, "
+            f"is None: {markdown_content is None}, "
+            f"length: {len(markdown_content) if markdown_content else 0}"
+        )
     except Exception as e:
         logger.error(f"Failed to partition markdown: {e}")
         logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Full error details: {repr(e)}")
-        import traceback
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
         raise
 
     # Build title map for header lookup (matches reference implementation)
