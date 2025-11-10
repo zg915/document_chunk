@@ -339,6 +339,7 @@ def save_chunks_to_weaviate(
 ) -> None:
     """
     Save chunks to Weaviate Personal_Chunks collection with cross-reference to document.
+    Uses batch processing for better performance with many chunks.
 
     Args:
         client: Weaviate client instance
@@ -351,28 +352,31 @@ def save_chunks_to_weaviate(
     """
     chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
 
-    # Insert chunks with cross-reference to the document
-    for i, chunk in enumerate(chunks):
-        chunk_data = {
-            "document_id": document_id,
-            "chunk_index": chunk.get("chunk_index", i),
-            "content": chunk["content"],
-            "header": chunk.get("header") or "",
-            "source_file": source_file,
-            "chunk_type": chunk.get("chunk_type", "text"),
-            "char_count": chunk.get("char_count", len(chunk["content"])),
-            "token_count": chunk.get("token_count", 0),
-            "extraction_method": "unstructured_v2",
-            "file_modified_at": file_modified_at
-        }
-
-        # Insert with cross-reference to parent document
-        chunks_collection.data.insert(
-            properties=chunk_data,
-            references={
-                "from_document": document_uuid  # Cross-reference to the parent document
+    # Use batch processing for efficient insertion of multiple chunks
+    with chunks_collection.batch.dynamic() as batch:
+        for i, chunk in enumerate(chunks):
+            chunk_data = {
+                "document_id": document_id,
+                "chunk_index": chunk.get("chunk_index", i),
+                "content": chunk["content"],
+                "header": chunk.get("header") or "",
+                "source_file": source_file,
+                "chunk_type": chunk.get("chunk_type", "text"),
+                "char_count": chunk.get("char_count", len(chunk["content"])),
+                "token_count": chunk.get("token_count", 0),
+                "extraction_method": "unstructured_v2",
+                "file_modified_at": file_modified_at
             }
-        )
+
+            # Add to batch with cross-reference to parent document
+            batch.add_object(
+                properties=chunk_data,
+                references={
+                    "from_document": document_uuid  # Cross-reference to the parent document
+                }
+            )
+
+        # Batch automatically flushes when exiting context manager
 
     logger.info(f"Saved {len(chunks)} chunks to Personal_Chunks (tenant: {tenant_id}) for document {document_id}")
 
