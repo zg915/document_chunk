@@ -316,7 +316,8 @@ async def upload_and_fast_process_document(
     tenant_id: str = Query(..., description="Tenant ID for multi-tenancy"),
     document_id: Optional[str] = Query(None, description="Optional custom document ID (auto-generated if not provided)"),
     document_type: Optional[str] = Query(None, description="Optional document category (contract, manual, material_list, etc.)"),
-    custom_file_path: Optional[str] = Query(None, description="Optional file path to store in DB (folder or full path)")
+    custom_file_path: Optional[str] = Query(None, description="Optional file path to store in DB (folder or full path)"),
+    business_id: Optional[str] = Query(None, description="Optional business identifier associated with this document")
 ):
     """
     Upload and fast process document to Weaviate Personal_Documents/Personal_Chunks.
@@ -328,6 +329,7 @@ async def upload_and_fast_process_document(
     Optional parameters:
     - document_type: Category of the document (contract, manual, material_list, etc.)
     - custom_file_path: File path metadata to store in DB (e.g., 'ITS/Disney/' or 'ITS/Disney/file.pdf')
+    - business_id: Business identifier associated with this document
     """
     temp_file_path = None
     start_time = time.time()
@@ -342,7 +344,8 @@ async def upload_and_fast_process_document(
             document_id=doc_id,
             tenant_id=tenant_id,
             document_type=document_type,
-            custom_file_path=custom_file_path
+            custom_file_path=custom_file_path,
+            business_id=business_id
         )
 
         processing_time = time.time() - start_time

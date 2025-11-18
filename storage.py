@@ -276,7 +276,8 @@ def save_document_to_weaviate(
     document_id: str,
     tenant_id: str,
     document_type: Optional[str] = None,
-    custom_file_path: Optional[str] = None
+    custom_file_path: Optional[str] = None,
+    business_id: Optional[str] = None
 ) -> str:
     """
     Save document metadata to Weaviate Personal_Documents collection with multi-tenancy.
@@ -289,6 +290,7 @@ def save_document_to_weaviate(
         tenant_id: Tenant ID for multi-tenancy
         document_type: Optional document category (contract, manual, material_list, etc.)
         custom_file_path: Optional custom file path to store (e.g., "ITS/Disney/file.pdf")
+        business_id: Optional business identifier associated with this document
 
     Returns:
         The document UUID used in Weaviate
@@ -313,9 +315,10 @@ def save_document_to_weaviate(
         "file_path": custom_file_path if custom_file_path is not None else "",  # Store custom path as-is
         "mime_type": mime_type,
         "file_modified_at": file_modified_at,
-        "file_category": document_type if document_type else "NA",
+        "file_category": document_type if document_type else "",
         "file_size": file_size,
         "total_chunks": total_chunks,
+        "business_id": business_id if business_id else "",
     }
 
     # Save to Weaviate Personal_Documents collection with tenant
@@ -335,7 +338,9 @@ def save_chunks_to_weaviate(
     document_id: str,
     tenant_id: str,
     source_file: str,
-    file_modified_at=None
+    file_modified_at=None,
+    file_category: Optional[str] = None,
+    business_id: Optional[str] = None
 ) -> None:
     """
     Save chunks to Weaviate Personal_Chunks collection with cross-reference to document.
@@ -349,6 +354,8 @@ def save_chunks_to_weaviate(
         tenant_id: Tenant ID for multi-tenancy
         source_file: Source file name (original document name)
         file_modified_at: File modification timestamp (optional)
+        file_category: Optional document category (contract, manual, material_list, etc.)
+        business_id: Optional business identifier associated with this chunk
     """
     chunks_collection = client.collections.get("Personal_Chunks").with_tenant(tenant_id)
 
@@ -365,7 +372,9 @@ def save_chunks_to_weaviate(
                 "char_count": chunk.get("char_count", len(chunk["content"])),
                 "token_count": chunk.get("token_count", 0),
                 "extraction_method": "unstructured_v2",
-                "file_modified_at": file_modified_at
+                "file_modified_at": file_modified_at,
+                "file_category": file_category if file_category else "NA",
+                "business_id": business_id if business_id else ""
             }
 
             # Add to batch with cross-reference to parent document
@@ -496,7 +505,8 @@ def fast_doc_to_weaviate(
     client: Optional[object] = None,
     include_metadata: Optional[bool] = True,
     document_type: Optional[str] = None,
-    custom_file_path: Optional[str] = None
+    custom_file_path: Optional[str] = None,
+    business_id: Optional[str] = None
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
@@ -515,6 +525,7 @@ def fast_doc_to_weaviate(
         include_metadata: Whether to include processing metadata in output
         document_type: Optional document category (contract, manual, material_list, etc.)
         custom_file_path: Optional custom path to store in DB (can be folder or full path)
+        business_id: Optional business identifier associated with this document
 
     Returns:
         Dictionary containing:
@@ -564,7 +575,8 @@ def fast_doc_to_weaviate(
             document_id=document_id,
             tenant_id=tenant_id,
             document_type=document_type,
-            custom_file_path=custom_file_path
+            custom_file_path=custom_file_path,
+            business_id=business_id
         )
 
         # Get source file name for chunks
@@ -578,7 +590,9 @@ def fast_doc_to_weaviate(
             document_id=document_id,
             tenant_id=tenant_id,
             source_file=source_file_name,
-            file_modified_at=file_modified_at
+            file_modified_at=file_modified_at,
+            file_category=document_type,
+            business_id=business_id
         )
 
         # Return summary information
