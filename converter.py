@@ -665,19 +665,24 @@ def fast_convert_to_markdown(
     )
 
     logger.info(f"Fast processing file: {file_path}")
-    
+    print(f"🔍 DEBUG fast_convert_to_markdown: file_path = {file_path}, file_ext = {file_ext}")
+
     # Extract content
     try:
         result = extractor.extract(file_path)
-        
+        print(f"🔍 DEBUG fast_convert_to_markdown: extractor result success = {result['success']}")
+
         if not result['success']:
+            print(f"🔍 DEBUG fast_convert_to_markdown: extraction FAILED, error = {result.get('error', 'Unknown error')}")
             logger.error(f"Fast conversion failed: {result.get('error', 'Unknown error')}")
             return None
-        
+
         markdown_content = result['markdown']
         processing_time = result['processing_time']
-        
+        print(f"🔍 DEBUG fast_convert_to_markdown: markdown_content length = {len(markdown_content) if markdown_content else 0}")
+
         if not markdown_content:
+            print(f"🔍 DEBUG fast_convert_to_markdown: markdown_content is EMPTY")
             logger.error("Fast conversion returned empty content")
             return None
         

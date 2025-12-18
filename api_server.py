@@ -336,6 +336,9 @@ async def upload_and_fast_process_document(
 
     try:
         temp_file_path = await acquire_file(file, url)
+        print(f"🔍 DEBUG: temp_file_path after acquire_file = {temp_file_path}")
+        print(f"🔍 DEBUG: file exists = {os.path.exists(temp_file_path)}")
+        print(f"🔍 DEBUG: file extension = {os.path.splitext(temp_file_path)[1]}")
 
         doc_id = document_id or str(uuid.uuid4())
 

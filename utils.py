@@ -200,19 +200,24 @@ async def convert_if_needed(file_path: str) -> str:
         Path to the file (original or converted)
     """
     file_ext = Path(file_path).suffix.lower()
+    print(f"🔍 DEBUG convert_if_needed: file_path = {file_path}, file_ext = {file_ext}")
 
     # Check if conversion is needed
     if file_ext in CONVERTIBLE_FORMATS:
         target_ext = CONVERTIBLE_FORMATS[file_ext]
+        print(f"🔍 DEBUG convert_if_needed: conversion needed {file_ext} -> {target_ext}")
 
         try:
             converted_path = await convert_format(file_path, target_ext)
+            print(f"🔍 DEBUG convert_if_needed: conversion SUCCESS, converted_path = {converted_path}")
             cleanup_temp_file(file_path)
             return converted_path
 
-        except Exception:
+        except Exception as e:
+            print(f"🔍 DEBUG convert_if_needed: conversion FAILED with error: {e}")
             return file_path
 
+    print(f"🔍 DEBUG convert_if_needed: no conversion needed, returning original")
     return file_path
 
 
