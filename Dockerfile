@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
     build-essential curl ca-certificates git \
     libmagic1 poppler-utils tesseract-ocr \
     libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    libreoffice-writer \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 
