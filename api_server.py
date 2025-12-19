@@ -213,7 +213,7 @@ async def convert_doc_to_markdown(
 
     try:
         # Acquire file from either upload or URL
-        temp_file_path = await acquire_file(file, url)
+        temp_file_path, _ = await acquire_file(file, url)
 
         # Use the unified convert_to_markdown function with webhook support
         webhook_url = os.getenv('WEBHOOK_URL')
@@ -265,8 +265,8 @@ async def fast_convert_to_mark_down(
     start_time = time.time()
 
     try:
-        temp_file_path = await acquire_file(file, url)
-        
+        temp_file_path, _ = await acquire_file(file, url)
+
         # Convert to markdown
         markdown_content = fast_convert_to_markdown(
             file_path=temp_file_path
@@ -335,8 +335,9 @@ async def upload_and_fast_process_document(
     start_time = time.time()
 
     try:
-        temp_file_path = await acquire_file(file, url)
+        temp_file_path, original_filename = await acquire_file(file, url)
         print(f"🔍 DEBUG: temp_file_path after acquire_file = {temp_file_path}")
+        print(f"🔍 DEBUG: original_filename = {original_filename}")
         print(f"🔍 DEBUG: file exists = {os.path.exists(temp_file_path)}")
         print(f"🔍 DEBUG: file extension = {os.path.splitext(temp_file_path)[1]}")
 
@@ -348,7 +349,8 @@ async def upload_and_fast_process_document(
             tenant_id=tenant_id,
             document_type=document_type,
             custom_file_path=custom_file_path,
-            business_id=business_id
+            business_id=business_id,
+            original_filename=original_filename
         )
 
         processing_time = time.time() - start_time
@@ -399,7 +401,7 @@ async def chunk_markdown_content(
         if file:
             # Handle file upload
             validate_file_format(file.filename, ['.md'])
-            temp_file_path = await save_uploaded_file(file)
+            temp_file_path, _ = await save_uploaded_file(file)
             chunks = chunk_markdown(
                 markdown_input=Path(temp_file_path)
             )

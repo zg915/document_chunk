@@ -277,7 +277,8 @@ def save_document_to_weaviate(
     tenant_id: str,
     document_type: Optional[str] = None,
     custom_file_path: Optional[str] = None,
-    business_id: Optional[str] = None
+    business_id: Optional[str] = None,
+    original_filename: Optional[str] = None
 ) -> str:
     """
     Save document metadata to Weaviate Personal_Documents collection with multi-tenancy.
@@ -291,6 +292,7 @@ def save_document_to_weaviate(
         document_type: Optional document category (contract, manual, material_list, etc.)
         custom_file_path: Optional custom file path to store (e.g., "ITS/Disney/file.pdf")
         business_id: Optional business identifier associated with this document
+        original_filename: Original filename for storage (if None, uses file_path name)
 
     Returns:
         The document UUID used in Weaviate
@@ -300,11 +302,12 @@ def save_document_to_weaviate(
 
     # Get file information
     file_stats = os.stat(file_path)
-    file_path_obj = Path(file_path)
 
-    file_name = file_path_obj.name
+    # Use original_filename if provided, otherwise fall back to temp file name
+    file_name = original_filename if original_filename else Path(file_path).name
     file_size = file_stats.st_size
-    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    # Get mime_type from original_filename if provided, for correct type detection
+    mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     total_chunks = len(chunks)
     file_modified_at = datetime.fromtimestamp(file_stats.st_mtime, tz=pytz.UTC)
 
@@ -506,7 +509,8 @@ def fast_doc_to_weaviate(
     include_metadata: Optional[bool] = True,
     document_type: Optional[str] = None,
     custom_file_path: Optional[str] = None,
-    business_id: Optional[str] = None
+    business_id: Optional[str] = None,
+    original_filename: Optional[str] = None
 ) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Fast pipeline to process a document and save to Weaviate using fast_convert_to_markdown.
@@ -526,6 +530,7 @@ def fast_doc_to_weaviate(
         document_type: Optional document category (contract, manual, material_list, etc.)
         custom_file_path: Optional custom path to store in DB (can be folder or full path)
         business_id: Optional business identifier associated with this document
+        original_filename: Original filename for storage in Weaviate (if None, uses file_path name)
 
     Returns:
         Dictionary containing:
@@ -567,6 +572,9 @@ def fast_doc_to_weaviate(
         if not chunks:
             raise ValueError(f"No chunks created from document: {file_path}")
 
+        # Use original_filename if provided, otherwise fall back to file_path name
+        source_file_name = original_filename if original_filename else Path(file_path).name
+
         # Step 3: Save document metadata to Weaviate Personal_Documents
         document_uuid, file_modified_at = save_document_to_weaviate(
             client=client,
@@ -576,11 +584,9 @@ def fast_doc_to_weaviate(
             tenant_id=tenant_id,
             document_type=document_type,
             custom_file_path=custom_file_path,
-            business_id=business_id
+            business_id=business_id,
+            original_filename=source_file_name
         )
-
-        # Get source file name for chunks
-        source_file_name = Path(file_path).name
 
         # Step 4: Save chunks to Weaviate Personal_Chunks with cross-reference
         save_chunks_to_weaviate(
@@ -598,12 +604,12 @@ def fast_doc_to_weaviate(
         # Return summary information
         result = {
             "document_id": document_id,
-            "file_name": Path(file_path).name,
+            "file_name": source_file_name,
             "total_chunks": len(chunks),
             "chunks": chunks  # Include chunks in case caller needs them
         }
 
-        logger.info(f"Successfully fast processed document '{Path(file_path).name}' with {len(chunks)} chunks (tenant: {tenant_id})")
+        logger.info(f"Successfully fast processed document '{source_file_name}' with {len(chunks)} chunks (tenant: {tenant_id})")
         return result
 
     except Exception as e:

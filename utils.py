@@ -63,19 +63,23 @@ def validate_file_format(filename: str, supported_formats: List[str]) -> None:
 # ============================================================================
 # FILE HANDLING
 # ============================================================================
-async def save_uploaded_file(file: UploadFile) -> str:
-    """Save uploaded file to temp directory and return path."""
-    # Sanitize filename - remove special characters but keep extension
+async def save_uploaded_file(file: UploadFile) -> tuple[str, str]:
+    """
+    Save uploaded file to temp directory and return path with original filename.
+
+    Returns:
+        Tuple of (temp_file_path, original_filename)
+    """
+    # Keep the original filename for metadata storage in Weaviate/DB
+    original_filename = file.filename
+
+    # Get file extension
     file_ext = Path(file.filename).suffix.lower()
-    base_name = Path(file.filename).stem
 
-    # Replace problematic characters with underscores
-    safe_base_name = re.sub(r'[^\w\s-]', '_', base_name)
-    safe_base_name = re.sub(r'[-\s]+', '_', safe_base_name)
-
-    # Create unique filename to avoid conflicts
-    unique_id = str(uuid.uuid4())[:8]
-    safe_filename = f"{safe_base_name}_{unique_id}{file_ext}"
+    # Use a short UUID-based temp filename to avoid "File name too long" errors
+    # The original filename is preserved and returned separately for Weaviate storage
+    unique_id = str(uuid.uuid4())
+    safe_filename = f"tmp_{unique_id}{file_ext}"
 
     temp_file_path = os.path.join(tempfile.gettempdir(), safe_filename)
 
@@ -83,7 +87,7 @@ async def save_uploaded_file(file: UploadFile) -> str:
         content = await file.read()
         buffer.write(content)
 
-    return temp_file_path
+    return temp_file_path, original_filename
 
 
 def cleanup_temp_file(file_path: str) -> None:
@@ -224,7 +228,7 @@ async def convert_if_needed(file_path: str) -> str:
 # ============================================================================
 # FILE ACQUISITION
 # ============================================================================
-async def download_file_from_url(url: str) -> str:
+async def download_file_from_url(url: str) -> tuple[str, str]:
     """
     Download a file from URL and save to temp directory.
 
@@ -232,39 +236,43 @@ async def download_file_from_url(url: str) -> str:
         url: URL of the file to download
 
     Returns:
-        Path to the downloaded temporary file
+        Tuple of (temp_file_path, original_filename)
 
     Raises:
         HTTPException: If download fails or URL is invalid
     """
     try:
         parsed_url = urlparse(url)
-        filename = os.path.basename(parsed_url.path)
-        if not filename:
-            filename = "downloaded_file"
+        original_filename = os.path.basename(parsed_url.path)
+        if not original_filename:
+            original_filename = "downloaded_file"
+
+        # Determine file extension
+        file_ext = Path(original_filename).suffix.lower() if '.' in original_filename else ''
 
         # Add extension if missing
-        if '.' not in filename:
+        if not file_ext:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             response = requests.head(url, headers=headers, timeout=10)
             content_type = response.headers.get('content-type', '')
             if 'pdf' in content_type:
-                filename += '.pdf'
+                file_ext = '.pdf'
             elif 'image' in content_type:
                 if 'jpeg' in content_type or 'jpg' in content_type:
-                    filename += '.jpg'
+                    file_ext = '.jpg'
                 elif 'png' in content_type:
-                    filename += '.png'
+                    file_ext = '.png'
                 elif 'gif' in content_type:
-                    filename += '.gif'
+                    file_ext = '.gif'
                 elif 'webp' in content_type:
-                    filename += '.webp'
+                    file_ext = '.webp'
                 else:
-                    filename += '.jpg'
+                    file_ext = '.jpg'
             else:
-                filename += '.pdf'
+                file_ext = '.pdf'
+            original_filename += file_ext
 
         # Download file
         headers = {
@@ -273,12 +281,16 @@ async def download_file_from_url(url: str) -> str:
         response = requests.get(url, headers=headers, timeout=30, stream=True)
         response.raise_for_status()
 
-        temp_file_path = os.path.join(tempfile.gettempdir(), filename)
+        # Use short UUID-based temp filename to avoid "File name too long" errors
+        unique_id = str(uuid.uuid4())
+        safe_filename = f"tmp_{unique_id}{file_ext}"
+        temp_file_path = os.path.join(tempfile.gettempdir(), safe_filename)
+
         with open(temp_file_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        return temp_file_path
+        return temp_file_path, original_filename
 
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=400, detail=f"{ERROR_MESSAGES['DOWNLOAD_FAILED']}: {str(e)}")
@@ -286,7 +298,7 @@ async def download_file_from_url(url: str) -> str:
         raise HTTPException(status_code=500, detail=f"{ERROR_MESSAGES['PROCESSING_FAILED']}: {str(e)}")
 
 
-async def acquire_file(file: UploadFile = None, url: str = None) -> str:
+async def acquire_file(file: UploadFile = None, url: str = None) -> tuple[str, str]:
     """
     Acquire a file either from upload or URL, and convert if needed.
 
@@ -295,7 +307,9 @@ async def acquire_file(file: UploadFile = None, url: str = None) -> str:
         url: Optional URL to download from
 
     Returns:
-        Path to the temporary file (possibly converted)
+        Tuple of (temp_file_path, original_filename)
+        - temp_file_path: Path to the temporary file (possibly converted)
+        - original_filename: Original filename for storage in Weaviate/DB
 
     Raises:
         HTTPException: If neither or both are provided
@@ -317,10 +331,10 @@ async def acquire_file(file: UploadFile = None, url: str = None) -> str:
                 status_code=400,
                 detail=f"Unsupported file format: {file_ext}. Supported: {SUPPORTED_FORMATS}"
             )
-        temp_file_path = await save_uploaded_file(file)
+        temp_file_path, original_filename = await save_uploaded_file(file)
     else:
-        temp_file_path = await download_file_from_url(url)
-        file_ext = Path(temp_file_path).suffix.lower()
+        temp_file_path, original_filename = await download_file_from_url(url)
+        file_ext = Path(original_filename).suffix.lower()
         if file_ext not in SUPPORTED_FORMATS:
             cleanup_temp_file(temp_file_path)
             raise HTTPException(
@@ -340,4 +354,8 @@ async def acquire_file(file: UploadFile = None, url: str = None) -> str:
             detail=f"File conversion resulted in unsupported format: {final_ext}"
         )
 
-    return final_file_path
+    # If conversion happened, update the original filename extension
+    if final_ext != Path(original_filename).suffix.lower():
+        original_filename = Path(original_filename).stem + final_ext
+
+    return final_file_path, original_filename
